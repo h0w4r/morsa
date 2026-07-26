@@ -62,6 +62,14 @@ public sealed class CompositeProxySource
             yield break;
         }
 
+        if (Path.IsPathFullyQualified(source) || File.Exists(source))
+        {
+            // Absolute POSIX and Windows paths can also parse as file URIs, so local files take precedence.
+            var localFile = new FileProxySource(Path.GetFullPath(source));
+            await foreach (var candidate in localFile.LoadAsync(cancellationToken).ConfigureAwait(false)) yield return candidate;
+            yield break;
+        }
+
         if (Uri.TryCreate(source, UriKind.Absolute, out var uri))
         {
             if (uri.Scheme != "https") throw new InvalidDataException("Remote proxy sources must use HTTPS.");

@@ -5,6 +5,28 @@ namespace Morsa.UnitTests;
 public sealed class CompositeProxySourceTests
 {
     [Fact]
+    public async Task LoadAsync_AbsoluteLocalPath_LoadsFileBeforeGenericUriParsing()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"morsa-proxies-{Guid.NewGuid():N}.txt");
+        await File.WriteAllTextAsync(path, "http://127.0.0.1:19082\n");
+        try
+        {
+            var candidates = new List<Morsa.Application.Abstractions.ProxyCandidate>();
+            await foreach (var candidate in new CompositeProxySource().LoadAsync(path, CancellationToken.None))
+            {
+                candidates.Add(candidate);
+            }
+
+            var selected = Assert.Single(candidates);
+            Assert.Equal("http://127.0.0.1:19082/", selected.Uri.AbsoluteUri);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
     public async Task LoadAsync_CommandPrefix_IsDispatchedBeforeGenericUriParsing()
     {
         var executable = OperatingSystem.IsWindows()
