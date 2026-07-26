@@ -6,6 +6,7 @@ if [[ "$#" -ne 2 ]]; then
   exit 2
 fi
 
+# shellcheck source=common.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 DOTNET="$(resolve_dotnet)"
 TARGET="$1"

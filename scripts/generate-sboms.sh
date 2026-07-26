@@ -7,6 +7,7 @@ readonly ROOT
 version="${1:?Usage: scripts/generate-sboms.sh VERSION RID}"
 rid="${2:?Usage: scripts/generate-sboms.sh VERSION RID}"
 stage="${ROOT}/artifacts/stage/${rid}"
+input="${ROOT}/artifacts/sbom-input/${rid}"
 dist="${ROOT}/artifacts/dist"
 
 command -v syft >/dev/null 2>&1 || {
@@ -18,7 +19,11 @@ test -d "${stage}" || {
 }
 mkdir -p "${dist}"
 
-syft "dir:${stage}" -o "spdx-json=${dist}/morsa-${version}-${rid}.spdx.json"
-syft "dir:${stage}" -o "cyclonedx-json=${dist}/morsa-${version}-${rid}.cdx.json"
+bash "${ROOT}/scripts/prepare-sbom-input.sh" "${rid}"
+
+syft --config "${ROOT}/packaging/sbom/syft.yaml" "dir:${input}" \
+  -o "spdx-json=${dist}/morsa-${version}-${rid}.spdx.json"
+syft --config "${ROOT}/packaging/sbom/syft.yaml" "dir:${input}" \
+  -o "cyclonedx-json=${dist}/morsa-${version}-${rid}.cdx.json"
 
 printf 'Generated SPDX and CycloneDX SBOMs for %s\n' "${rid}"

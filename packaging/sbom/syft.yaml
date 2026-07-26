@@ -1,0 +1,20 @@
+check-for-app-update: false
+
+# Single-file bundles hide their NuGet graph, so the prepared input also contains
+# the four RID-specific .deps.json files generated during publish.
+select-catalogers:
+  - +dotnet-deps-binary-cataloger
+  - +file-digest-cataloger
+  - +file-metadata-cataloger
+
+file:
+  metadata:
+    selection: all
+    digests:
+      - sha1
+      - sha256
+
+dotnet:
+  dep-packages-must-have-dll: false
+  dep-packages-must-claim-dll: true
+  exclude-project-references: true

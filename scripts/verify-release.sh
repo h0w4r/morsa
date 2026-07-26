@@ -60,6 +60,29 @@ for path in sorted([*root.glob("*.spdx.json"), *root.glob("*.cdx.json")]):
         document = json.load(stream)
     if not isinstance(document, dict):
         raise SystemExit(f"invalid SBOM root: {path}")
+    if path.name.endswith(".spdx.json"):
+        packages = document.get("packages", [])
+        files = document.get("files", [])
+        if len(packages) < 10 or len(files) < 4:
+            raise SystemExit(f"incomplete SPDX inventory: {path}")
+        checksums = [checksum for item in files for checksum in item.get("checksums", [])]
+        sha256 = [item.get("checksumValue", "") for item in checksums if item.get("algorithm") == "SHA256"]
+        if len(sha256) < 8 or any(len(value) != 64 or set(value) == {"0"} for value in sha256):
+            raise SystemExit(f"SPDX inventory has no SHA-256 file digests: {path}")
+        by_name = {item.get("fileName"): item for item in files}
+        required = {
+            "payload/bin/morsa",
+            "payload/libexec/morsa/morsa-parser-host",
+            "payload/libexec/morsa/morsa-plugin-host",
+            "payload/libexec/morsa/morsa-mcp",
+        }
+        for name in required:
+            entry = by_name.get(name, {})
+            if not any(item.get("algorithm") == "SHA256" for item in entry.get("checksums", [])):
+                raise SystemExit(f"SPDX inventory omits payload digest {name}: {path}")
+    else:
+        if len(document.get("components", [])) < 10:
+            raise SystemExit(f"incomplete CycloneDX inventory: {path}")
     print(f"valid SBOM: {path.name}")
 PY
 

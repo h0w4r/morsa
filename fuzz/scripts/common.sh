@@ -5,6 +5,7 @@ set -euo pipefail
 FUZZ_SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 MORSA_ROOT="$(cd -- "${FUZZ_SCRIPT_DIR}/../.." && pwd)"
 FUZZ_PROJECT="${MORSA_ROOT}/fuzz/Morsa.FuzzHarness/Morsa.FuzzHarness.csproj"
+# shellcheck disable=SC2034 # Consumed by the scripts that source this shared harness.
 FUZZ_DLL="${MORSA_ROOT}/fuzz/Morsa.FuzzHarness/bin/Release/net10.0/Morsa.FuzzHarness.dll"
 
 resolve_dotnet() {
