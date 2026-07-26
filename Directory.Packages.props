@@ -20,7 +20,7 @@
     <PackageVersion Include="Serilog.Sinks.Console" Version="6.1.1" />
     <PackageVersion Include="Serilog.Sinks.File" Version="7.0.0" />
     <PackageVersion Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.4" />
-    <PackageVersion Include="Spectre.Console" Version="0.55.0" />
+    <PackageVersion Include="Spectre.Console" Version="0.57.2" />
     <PackageVersion Include="Spectre.Console.Cli" Version="0.55.0" />
     <PackageVersion Include="Tomlyn" Version="2.10.1" />
     <PackageVersion Include="coverlet.collector" Version="10.0.1" />
