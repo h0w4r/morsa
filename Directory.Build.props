@@ -17,7 +17,7 @@
     <RepositoryType>git</RepositoryType>
     <PackageLicenseExpression>GPL-3.0-or-later</PackageLicenseExpression>
     <Authors>0xBytFndr</Authors>
-    <!-- Release scripts override Version; the final prerelease line is 0.9.0. -->
-    <VersionPrefix>0.9.0</VersionPrefix>
+    <!-- Release scripts may override Version; 1.0.0 is the stable product baseline. -->
+    <VersionPrefix>1.0.0</VersionPrefix>
   </PropertyGroup>
 </Project>
