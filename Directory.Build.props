@@ -17,8 +17,7 @@
     <RepositoryType>git</RepositoryType>
     <PackageLicenseExpression>GPL-3.0-or-later</PackageLicenseExpression>
     <Authors>0xBytFndr</Authors>
-    <!-- Release scripts override Version; local builds identify themselves as the 1.0 release candidate. -->
+    <!-- Release scripts override Version; the final prerelease line is 0.9.0. -->
     <VersionPrefix>0.9.0</VersionPrefix>
-    <VersionSuffix>rc.1</VersionSuffix>
   </PropertyGroup>
 </Project>
