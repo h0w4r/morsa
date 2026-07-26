@@ -1,6 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <ProjectReference Include="..\Morsa.Application\Morsa.Application.csproj" />
     <ProjectReference Include="..\Morsa.Domain\Morsa.Domain.csproj" />
   </ItemGroup>
 
