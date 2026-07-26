@@ -12,6 +12,8 @@ internal sealed class LegacySyntheticCorpus : IDisposable
         [0xe0, 0x85, 0x9f, 0xf2, 0xf9, 0x4f, 0x68, 0x10, 0xab, 0x91, 0x08, 0x00, 0x2b, 0x27, 0xb3, 0xd9];
     private static readonly byte[] DocumentSummaryInformationFormatId =
         [0x02, 0xd5, 0xcd, 0xd5, 0x9c, 0x2e, 0x1b, 0x10, 0x93, 0x97, 0x08, 0x00, 0x2b, 0x2c, 0xf9, 0xae];
+    private static readonly byte[] CustomInformationFormatId =
+        [0x05, 0xd5, 0xcd, 0xd5, 0x9c, 0x2e, 0x1b, 0x10, 0x93, 0x97, 0x08, 0x00, 0x2b, 0x2c, 0xf9, 0xae];
     private readonly string _root = Path.Combine(Path.GetTempPath(), "morsa-legacy-corpus", Guid.NewGuid().ToString("N"));
 
     public LegacySyntheticCorpus() => Directory.CreateDirectory(_root);
@@ -89,6 +91,15 @@ internal sealed class LegacySyntheticCorpus : IDisposable
             "C:\\Users\\ole.user\\Pictures\\photo.jpg",
             "C:\\Temp\\photo.jpg",
             CreateExifJpeg("Embedded OLE Artist")));
+        root.Flush();
+        return path;
+    }
+
+    public string CreateOleCompoundWithPackedUtf8CustomDictionary()
+    {
+        var path = Path.Combine(_root, "sample-custom.doc");
+        using var root = RootStorage.Create(path);
+        WriteStream(root, "\u0005DocumentSummaryInformation", CreateDocumentSummaryWithCustomProperties());
         root.Flush();
         return path;
     }
@@ -191,6 +202,104 @@ internal sealed class LegacySyntheticCorpus : IDisposable
             properties[index].Value.CopyTo(result, sectionOffset + offsets[index]);
         }
 
+        return result;
+    }
+
+    private static byte[] CreateDocumentSummaryWithCustomProperties()
+    {
+        var documentSection = CreatePropertySection(
+            (2u, StringProperty("Security")));
+        var customSection = CreatePropertySection(
+            (0u, CustomDictionaryProperty(
+                (2u, "Company"),
+                (3u, "EvidencePath"),
+                (4u, "Manager"),
+                (5u, "MorsaCase"))),
+            (1u, CodePageProperty(65001)),
+            (2u, Utf8StringProperty("Morsa Perú")),
+            (3u, Utf8StringProperty(@"C:\Users\chris.kali\Documents\evidence.doc")),
+            (4u, Utf8StringProperty("Chris Acceptance Manager")),
+            (5u, Utf8StringProperty("KALI-REAL-DOC")));
+
+        const int descriptorOffset = 28;
+        const int descriptorSize = 20;
+        const int sectionCount = 2;
+        var documentSectionOffset = descriptorOffset + (descriptorSize * sectionCount);
+        var customSectionOffset = Align4(documentSectionOffset + documentSection.Length);
+        var result = new byte[customSectionOffset + customSection.Length];
+
+        BinaryPrimitives.WriteUInt16LittleEndian(result.AsSpan(0, 2), 0xfffe);
+        result[4] = 5; // Windows XP high/low version pair used by the legacy parser.
+        result[5] = 1;
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(24, 4), sectionCount);
+
+        DocumentSummaryInformationFormatId.CopyTo(result, descriptorOffset);
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(descriptorOffset + 16, 4), (uint)documentSectionOffset);
+        CustomInformationFormatId.CopyTo(result, descriptorOffset + descriptorSize);
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(descriptorOffset + descriptorSize + 16, 4), (uint)customSectionOffset);
+
+        documentSection.CopyTo(result, documentSectionOffset);
+        customSection.CopyTo(result, customSectionOffset);
+        return result;
+    }
+
+    private static byte[] CreatePropertySection(params (uint Id, byte[] Value)[] properties)
+    {
+        var tableSize = 8 + (properties.Length * 8);
+        var offsets = new int[properties.Length];
+        var cursor = Align4(tableSize);
+        for (var index = 0; index < properties.Length; index++)
+        {
+            offsets[index] = cursor;
+            cursor = Align4(cursor + properties[index].Value.Length);
+        }
+
+        var result = new byte[cursor];
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(0, 4), (uint)result.Length);
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(4, 4), (uint)properties.Length);
+        for (var index = 0; index < properties.Length; index++)
+        {
+            var table = 8 + (index * 8);
+            BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(table, 4), properties[index].Id);
+            BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(table + 4, 4), (uint)offsets[index]);
+            properties[index].Value.CopyTo(result, offsets[index]);
+        }
+
+        return result;
+    }
+
+    private static byte[] CustomDictionaryProperty(params (uint Id, string Name)[] entries)
+    {
+        using var output = new MemoryStream();
+        using var writer = new BinaryWriter(output, Encoding.UTF8, leaveOpen: true);
+        writer.Write((uint)entries.Length);
+        foreach (var (id, name) in entries)
+        {
+            var encoded = Encoding.UTF8.GetBytes(name + "\0");
+            writer.Write(id);
+            writer.Write((uint)encoded.Length);
+            writer.Write(encoded);
+            // MS-OLEPS pads the complete Dictionary packet, not each DictionaryEntry.
+        }
+
+        return output.ToArray();
+    }
+
+    private static byte[] CodePageProperty(ushort codePage)
+    {
+        var result = new byte[8];
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(0, 4), 0x02);
+        BinaryPrimitives.WriteUInt16LittleEndian(result.AsSpan(4, 2), codePage);
+        return result;
+    }
+
+    private static byte[] Utf8StringProperty(string value)
+    {
+        var encoded = Encoding.UTF8.GetBytes(value + "\0");
+        var result = new byte[8 + encoded.Length];
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(0, 4), 0x1e);
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(4, 4), (uint)encoded.Length);
+        encoded.CopyTo(result, 8);
         return result;
     }
 

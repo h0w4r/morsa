@@ -240,8 +240,21 @@ public sealed class OleMetadataExtractor : IArtifactExtractor
     private static Encoding ResolvePropertyEncoding(byte[] data, IReadOnlyCollection<(uint Id, int Offset)> entries)
     {
         var codePageEntry = entries.FirstOrDefault(entry => entry.Id == 1);
-        if (codePageEntry == default || !TryReadProperty(data, codePageEntry.Offset, out var codePageValue) ||
-            !int.TryParse(codePageValue, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var codePage))
+        if (codePageEntry == default)
+        {
+            return Encoding.Latin1;
+        }
+
+        Ensure(data, codePageEntry.Offset, 6);
+        var propertyType = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(codePageEntry.Offset, 4));
+        int codePage;
+        if (propertyType == 0x02)
+        {
+            // PID_CODEPAGE is serialized as VT_I2 but its 16-bit value represents an unsigned code-page identifier.
+            codePage = BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(codePageEntry.Offset + 4, 2));
+        }
+        else if (!TryReadProperty(data, codePageEntry.Offset, out var codePageValue) ||
+                 !int.TryParse(codePageValue, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out codePage))
         {
             return Encoding.Latin1;
         }
@@ -282,7 +295,8 @@ public sealed class OleMetadataExtractor : IArtifactExtractor
             var byteCount = checked(characters * (encoding.CodePage == Encoding.Unicode.CodePage ? 2 : 1));
             Ensure(data, cursor, byteCount);
             var name = encoding.GetString(data, cursor, byteCount).TrimEnd('\0');
-            cursor = (cursor + byteCount + 3) & ~3;
+            // DictionaryEntry packets are contiguous; only the complete Dictionary packet has trailing 4-byte padding.
+            cursor += byteCount;
             if (!string.IsNullOrWhiteSpace(name)) result[id] = name;
         }
 

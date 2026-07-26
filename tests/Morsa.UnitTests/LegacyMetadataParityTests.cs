@@ -75,6 +75,21 @@ public sealed class LegacyMetadataParityTests
     }
 
     [Fact]
+    public async Task OleExtractor_PackedUtf8CustomDictionary_ExtractsAllNamedProperties()
+    {
+        using var corpus = new LegacySyntheticCorpus();
+        var path = corpus.CreateOleCompoundWithPackedUtf8CustomDictionary();
+
+        var result = await ExtractAsync(new OleMetadataExtractor(), path, ArtifactKind.OleCompound);
+
+        AssertObservation(result, "company", "Morsa Perú");
+        AssertObservation(result, "custom.evidencepath", @"C:\Users\chris.kali\Documents\evidence.doc");
+        AssertObservation(result, "manager", "Chris Acceptance Manager");
+        AssertObservation(result, "custom.morsacase", "KALI-REAL-DOC");
+        Assert.DoesNotContain(result.Diagnostics, item => item.IsError);
+    }
+
+    [Fact]
     public async Task OleExtractor_TruncatedPropertySet_ReportsPartialFailureWithoutThrowing()
     {
         using var corpus = new LegacySyntheticCorpus();
