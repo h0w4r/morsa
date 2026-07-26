@@ -1,0 +1,16 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Morsa.Application/Morsa.Application.csproj" />
+    <Project Path="src/Morsa.Cli/Morsa.Cli.csproj" />
+    <Project Path="src/Morsa.Domain/Morsa.Domain.csproj" />
+    <Project Path="src/Morsa.Infrastructure/Morsa.Infrastructure.csproj" />
+    <Project Path="src/Morsa.Mcp/Morsa.Mcp.csproj" />
+    <Project Path="src/Morsa.ParserHost/Morsa.ParserHost.csproj" />
+    <Project Path="src/Morsa.PluginHost/Morsa.PluginHost.csproj" />
+    <Project Path="src/Morsa.PluginSdk/Morsa.PluginSdk.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Morsa.IntegrationTests/Morsa.IntegrationTests.csproj" />
+    <Project Path="tests/Morsa.UnitTests/Morsa.UnitTests.csproj" />
+  </Folder>
+</Solution>

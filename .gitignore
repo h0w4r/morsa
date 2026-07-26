@@ -1,0 +1,46 @@
+# .NET build outputs
+bin/
+obj/
+artifacts/
+TestResults/
+coverage/
+
+# Project-local SDK and caches
+.dotnet/
+.cache/
+.packages/
+
+# IDE and editor state
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+
+# Local Morsa workspaces and runtime data
+morsa.db
+morsa.db-*
+morsa.toml
+artifacts/
+cache/
+logs/
+reports/
+quarantine/
+
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+*.secrets.json
+*.key
+*.pem
+
+# Operating system files
+.DS_Store
+Thumbs.db
+
+# Internal planning artifacts must never be published.
+docs/internal/
+plans/
+backlog/
+
