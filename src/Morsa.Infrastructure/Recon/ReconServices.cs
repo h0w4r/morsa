@@ -276,11 +276,26 @@ public sealed class FingerprintService(
         {
             await stream.WriteAsync(Encoding.ASCII.GetBytes($"EHLO morsa.local\r\n"), cancellationToken).ConfigureAwait(false);
         }
+        else if (protocol.Equals("http", StringComparison.OrdinalIgnoreCase))
+        {
+            // HTTP servers speak only after a request; use HEAD to collect headers without downloading a response body.
+            await stream.WriteAsync(
+                Encoding.ASCII.GetBytes($"HEAD / HTTP/1.0\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n"),
+                cancellationToken).ConfigureAwait(false);
+        }
 
         var buffer = new byte[8 * 1024];
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(5));
-        var read = await stream.ReadAsync(buffer, timeout.Token).ConfigureAwait(false);
+        int read;
+        try
+        {
+            read = await stream.ReadAsync(buffer, timeout.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new TimeoutException("Service banner read timed out after 5 seconds.", exception);
+        }
         var observation = new ServiceObservation
         {
             RunId = runId,
