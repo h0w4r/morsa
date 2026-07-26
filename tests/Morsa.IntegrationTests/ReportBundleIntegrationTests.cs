@@ -6,6 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Morsa.Application.Abstractions;
 using Morsa.Domain.Artifacts;
 using Morsa.Domain.Common;
+using Morsa.Domain.Correlation;
 using Morsa.Domain.Projects;
 using Morsa.Domain.Runs;
 using Morsa.Infrastructure;
@@ -59,6 +60,14 @@ public sealed class ReportBundleIntegrationTests : IAsyncLifetime
         var reportJson = await reportReader.ReadToEndAsync();
         Assert.DoesNotContain("HIGHLY-SECRET", reportJson, StringComparison.Ordinal);
         Assert.DoesNotContain("/sensitive/source", reportJson, StringComparison.Ordinal);
+        using var report = JsonDocument.Parse(reportJson);
+        var artifactEntity = Assert.Single(
+            report.RootElement.GetProperty("entities").EnumerateArray(),
+            item => item.GetProperty("type").GetString() == "artifact");
+        Assert.StartsWith("[redacted:", artifactEntity.GetProperty("value").GetString(), StringComparison.Ordinal);
+        Assert.Equal(
+            manifest.RootElement.GetProperty("artifacts")[0].GetProperty("sha256").GetString(),
+            artifactEntity.GetProperty("normalized_value").GetString());
         Assert.All(archive.Entries, entry =>
         {
             // ZIP timestamps carry local offset, but the deterministic DOS calendar value is fixed.
@@ -101,6 +110,14 @@ public sealed class ReportBundleIntegrationTests : IAsyncLifetime
             MimeType = stored.MimeType,
         };
         store.Add(artifact);
+        store.Add(new EntityNode
+        {
+            ProjectId = project.Id,
+            Type = "artifact",
+            Value = artifact.OriginalPath,
+            NormalizedValue = artifact.Sha256,
+            Confidence = 1.0,
+        });
         store.Add(new MetadataObservation
         {
             ArtifactId = artifact.Id,

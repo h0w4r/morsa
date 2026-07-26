@@ -334,15 +334,34 @@ internal static class ReportRedaction
         item.CollectedAt,
     };
 
-    public static object Entity(EntityNode item, bool redact) => !redact || !SensitiveCategories.Contains(item.Type) ? item : new
+    public static object Entity(EntityNode item, bool redact)
     {
-        item.Id,
-        item.ProjectId,
-        item.Type,
-        Value = Value(item.Value),
-        NormalizedValue = Value(item.NormalizedValue),
-        item.Confidence,
-    };
+        if (!redact) return item;
+        if (item.Type.Equals("artifact", StringComparison.OrdinalIgnoreCase))
+        {
+            // Artifact entities use Value for the source path and NormalizedValue for the non-sensitive SHA-256 identity.
+            return new
+            {
+                item.Id,
+                item.ProjectId,
+                item.Type,
+                Value = Value(item.Value),
+                item.NormalizedValue,
+                item.Confidence,
+            };
+        }
+
+        if (!SensitiveCategories.Contains(item.Type)) return item;
+        return new
+        {
+            item.Id,
+            item.ProjectId,
+            item.Type,
+            Value = Value(item.Value),
+            NormalizedValue = Value(item.NormalizedValue),
+            item.Confidence,
+        };
+    }
 
     public static object Finding(Finding item, bool redact) => !redact || !item.Sensitive ? item : new
     {
