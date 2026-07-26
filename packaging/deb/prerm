@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+
+# Runtime workspaces live outside package-owned paths and are never removed.
+exit 0

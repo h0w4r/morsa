@@ -5,6 +5,8 @@
     <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
     <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <!-- The pinned C# 7-era upstream has no nullable annotations; do not reinterpret it. -->
+    <Nullable>disable</Nullable>
     <NuGetAudit>false</NuGetAudit>
     <AssemblyName>MetadataExtractCore.Compat</AssemblyName>
     <FocaRoot Condition="'$(FocaRoot)' == ''">$(MSBuildThisFileDirectory)..\..\.cache\upstream\foca</FocaRoot>

@@ -1,0 +1,178 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  DOTNET_NOLOGO: "1"
+  NUGET_XMLDOC_MODE: skip
+
+jobs:
+  foca-differential:
+    name: Differential parity against pinned FOCA
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - name: Check out Morsa source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Check out pinned FOCA baseline
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: ElevenPaths/FOCA
+          ref: 754453ad7f9579a6021c484d5014a3cd12fd0e35
+          path: .cache/upstream/foca
+          fetch-depth: 1
+
+      - name: Install pinned .NET SDK
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: global.json
+
+      - name: Build exact FOCA compatibility runner
+        shell: pwsh
+        run: dotnet build tools/FocaDifferential/FocaRunner.csproj --configuration Release
+
+      - name: Compare Morsa with the FOCA baseline
+        shell: pwsh
+        run: >-
+          dotnet run --project tools/FocaDifferential/Morsa.FocaDifferential.csproj
+          --configuration Release
+          --
+          tools/FocaDifferential/bin/Release/net461/FocaRunner.exe
+          TestResults/foca-differential.json
+
+      - name: Upload differential evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: foca-differential-results
+          path: TestResults/foca-differential.json
+          if-no-files-found: error
+          retention-days: 14
+
+  build-test-audit:
+    name: Build, test and audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Install pinned .NET SDK
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: |
+            **/*.csproj
+            Directory.Packages.props
+
+      - name: Restore with vulnerability audit
+        run: dotnet restore Morsa.slnx --disable-parallel
+
+      - name: Build with warnings as errors
+        run: dotnet build Morsa.slnx --configuration Release --no-restore
+
+      - name: Run unit and integration tests
+        run: |
+          dotnet test tests/Morsa.UnitTests/Morsa.UnitTests.csproj --configuration Release --no-build --logger "trx;LogFileName=unit.trx" --results-directory TestResults
+          dotnet test tests/Morsa.IntegrationTests/Morsa.IntegrationTests.csproj --configuration Release --no-build --logger "trx;LogFileName=integration.trx" --results-directory TestResults
+          dotnet test examples/Morsa.CommercialPlugins.Tests/Morsa.CommercialPlugins.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=commercial-plugins.trx" --results-directory TestResults
+
+      - name: Verify formatting
+        run: dotnet format Morsa.slnx --verify-no-changes --no-restore --severity warn
+
+      - name: Upload test evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: test-results
+          path: TestResults/**
+          if-no-files-found: error
+          retention-days: 14
+
+  publish-contracts:
+    name: Validate self-contained RIDs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        rid:
+          - linux-x64
+          - linux-arm64
+          - linux-musl-x64
+          - linux-musl-arm64
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Install pinned .NET SDK
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: global.json
+
+      - name: Restore runtime graph
+        run: dotnet restore src/Morsa.Cli/Morsa.Cli.csproj --runtime "${{ matrix.rid }}" --disable-parallel
+
+      - name: Publish single-file CLI
+        run: >-
+          dotnet publish src/Morsa.Cli/Morsa.Cli.csproj
+          --configuration Release
+          --runtime "${{ matrix.rid }}"
+          --self-contained true
+          --no-restore
+          -p:PublishSingleFile=true
+          -p:PublishTrimmed=false
+          -p:DebugType=None
+          -p:DebugSymbols=false
+          -o "artifacts/publish/${{ matrix.rid }}"
+
+      - name: Validate published payload
+        run: |
+          test -x "artifacts/publish/${{ matrix.rid }}/morsa"
+          test ! -e "artifacts/publish/${{ matrix.rid }}/morsa.dll"
+          file "artifacts/publish/${{ matrix.rid }}/morsa"
+
+      - name: Smoke current architecture
+        if: matrix.rid == 'linux-x64'
+        run: |
+          artifacts/publish/linux-x64/morsa version
+          artifacts/publish/linux-x64/morsa --help >/dev/null
+
+  package-scripts:
+    name: Packaging script checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Parse Bash delivery scripts
+        run: |
+          find scripts -type f -name '*.sh' -print0 | xargs -0 -n1 bash -n
+          bash -n packaging/deb/postinst
+          bash -n packaging/deb/prerm
+
+      - name: Validate shell style
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends shellcheck
+          find scripts -type f -name '*.sh' -print0 | xargs -0 shellcheck
+
+      - name: Validate workflows and configuration
+        run: |
+          ruby -e 'require "yaml"; Dir[".github/**/*.yml"].sort.each { |path| YAML.load_file(path); puts "valid YAML: #{path}" }'

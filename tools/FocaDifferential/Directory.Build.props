@@ -1,0 +1,8 @@
+<Project>
+  <!-- Preserve repository-wide C# and supply-chain settings for this nested tool tree. -->
+  <Import Project="..\..\Directory.Build.props" />
+  <PropertyGroup>
+    <!-- Sibling projects target different frameworks and must never overwrite one shared assets file. -->
+    <BaseIntermediateOutputPath>obj\$(MSBuildProjectName)\</BaseIntermediateOutputPath>
+  </PropertyGroup>
+</Project>

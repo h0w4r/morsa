@@ -8,6 +8,10 @@ provenance/SBOM BuildKit en OCI.
 sha256sum --check SHA256SUMS --ignore-missing
 grep 'morsa-1.0.0-linux-x64.tar.gz$' SHA256SUMS
 gh attestation verify morsa-1.0.0-linux-x64.tar.gz -R h0w4r/morsa
+
+# Los paquetes nativos son sujetos atestados independientes del mismo stage del RID.
+gh attestation verify morsa-1.0.0-linux-x64.deb -R h0w4r/morsa
+gh attestation verify morsa-1.0.0-linux-x64.rpm -R h0w4r/morsa
 ```
 
 `--ignore-missing` sirve si descargaste un solo RID, pero el archivo debe aparecer

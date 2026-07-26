@@ -1,0 +1,47 @@
+version: 2
+updates:
+  # NuGet dependencies are centrally versioned in Directory.Packages.props.
+  - package-ecosystem: nuget
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: America/Lima
+    open-pull-requests-limit: 10
+    labels:
+      - dependencies
+      - dotnet
+    groups:
+      microsoft-dotnet:
+        patterns:
+          - "Microsoft.*"
+      test-tooling:
+        patterns:
+          - "xunit*"
+          - "coverlet*"
+
+  # Keep all reusable GitHub Actions under automated review.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:30"
+      timezone: America/Lima
+    open-pull-requests-limit: 10
+    labels:
+      - dependencies
+      - github-actions
+
+  # Track the base images used by the OCI delivery.
+  - package-ecosystem: docker
+    directory: /packaging/oci
+    schedule:
+      interval: weekly
+      day: monday
+      time: "10:00"
+      timezone: America/Lima
+    labels:
+      - dependencies
+      - container

@@ -1,0 +1,258 @@
+.TH MORSA 1 "26 July 2026" "Morsa 1.0" "User Commands"
+.SH NAME
+morsa \- Linux metadata, OSINT, evidence correlation, and scoped reconnaissance CLI
+.SH SYNOPSIS
+.B morsa
+.RI [ --project " PATH" ]
+.RI [ --json ]
+.I COMMAND
+.RI [ ARGUMENTS ]
+.SH DESCRIPTION
+Morsa stores investigations in durable SQLite workspaces, ingests artifacts into a
+SHA-256 content-addressable store, extracts bounded metadata, correlates evidence,
+discovers public resources, and performs explicitly scoped network operations.
+It supports HTTP and SOCKS proxy pools with bounded automatic rotation.
+.PP
+Commands and machine contracts are English. Human documentation is available in
+English and Spanish. JSON and NDJSON objects include a mandatory
+.B schema_version
+field.
+.SH GLOBAL OPTIONS
+.TP
+.BI --project " PATH"
+Use PATH as the workspace instead of the current directory.
+.TP
+.B --json
+Emit the command's versioned JSON representation. Logs remain on standard error.
+.TP
+.B --help
+Show contextual help.
+.SH CORE COMMANDS
+.TP
+.BI init " [PATH] [--name NAME]"
+Create or open a self-contained Morsa workspace.
+.TP
+.B doctor
+Inspect SDK/runtime, sandbox helpers, workspace paths, SQLite, and external tools.
+.TP
+.B version
+Print product, protocol, and schema versions.
+.TP
+.B project status
+Summarize project, runs, tasks, artifacts, findings, and pending work.
+.TP
+.BI scope " add VALUE [--kind KIND] [--max-mode MODE]"
+Add an authorized domain, host, URL, address, or CIDR with a maximum activity mode.
+.TP
+.B scope list
+List normalized scope entries.
+.SH INGESTION AND PIPELINES
+.TP
+.BI ingest " file FILE [--max-mb MB]"
+Hash and store one local artifact.
+.TP
+.BI ingest " directory DIRECTORY [--recursive] [--max-files COUNT]"
+Ingest a bounded directory set.
+.TP
+.BI ingest " url URL [--proxy-pool POOL] [--max-mb MB]"
+Acquire one in-scope URL and ingest the response artifact.
+.TP
+.BI discover " documents TARGET [--types TYPES] [--provider PROVIDERS] [--max-results COUNT] [--active-crawl]"
+Discover candidate documents with configured providers.
+.TP
+.BI discover " history TARGET"
+Discover historical URLs using Common Crawl.
+.TP
+.BI discover " import SOURCE [--format FORMAT] [--max-results COUNT]"
+Import text, CSV, JSON, NDJSON, HAR, or stdin URL collections.
+.TP
+.BI fetch " pending [--proxy-pool POOL] [--max-mb MB]"
+Acquire pending resources through the bounded network transport.
+.TP
+.BI run " full TARGET [--types TYPES] [--providers PROVIDERS] [--proxy-pool POOL] [--active-crawl]"
+Run discovery, acquisition, analysis, and correlation.
+.TP
+.BI run " resume [--proxy-pool POOL]"
+Resume durable pending work idempotently.
+.TP
+.B analyze all
+Analyze all pending artifacts.
+.TP
+.B correlate
+Create normalized entities and evidence-backed relationships.
+.SH RECONNAISSANCE
+.TP
+.BI recon " dns NAME [--types A,AAAA,MX,NS,SOA,TXT,CNAME,SRV,CAA]"
+Resolve selected DNS record types.
+.TP
+.BI recon " reverse ADDRESSES"
+Resolve a comma-separated address set.
+.TP
+.BI recon " subdomains DOMAIN [--wordlist FILE] [--budget COUNT]"
+Enumerate bounded DNS labels with wildcard suppression.
+.TP
+.BI recon " range CIDR [--budget COUNT]"
+Perform bounded PTR enumeration for an authorized prefix.
+.TP
+.BI recon " axfr ZONE [--server NAME]"
+Attempt an explicitly authorized aggressive TCP zone transfer.
+.TP
+.BI fingerprint " http URL [--proxy-pool POOL]"
+Collect bounded HTTP service attributes.
+.TP
+.BI fingerprint " tls HOST [--port PORT]"
+Inspect an in-scope TLS certificate and negotiation.
+.TP
+.BI fingerprint " banner HOST [--port PORT] [--protocol tcp]"
+Collect a bounded service banner.
+.TP
+.BI web " crawl URL [--depth DEPTH] [--max-pages COUNT] [--proxy-pool POOL]"
+Create a bounded same-host HTTP map.
+.TP
+.BI web " backups URL [--budget COUNT] [--proxy-pool POOL]"
+Validate evidence-derived backup candidates in aggressive mode.
+.TP
+.BI malware " scan [--artifact ID]"
+Run local static risk checks and optional ClamAV integration.
+.TP
+.BI malware " yara RULES [--artifact ID]"
+Run an installed YARA engine against stored artifacts.
+.SH PROXIES
+.TP
+.BI proxy " pool add NAME [--policy POLICY] [--max-rotations COUNT] [--max-attempts COUNT] [--allow-direct-fallback]"
+Create or update a proxy pool.
+.TP
+.B proxy pool list
+List pools and policies.
+.TP
+.BI proxy " import SOURCE [--pool NAME]"
+Import user-managed endpoints from a supported source.
+.TP
+.BI proxy " source list"
+List supported source adapters and environment availability without exposing values.
+.TP
+.BI proxy " source load SOURCE [--pool NAME]"
+Load a file, stdin, environment, HTTPS, command, or inline source into a pool.
+.TP
+.BI proxy " status [--pool NAME]"
+Show health, counters, latency, and cooldown state.
+.TP
+.BI proxy " reset [--pool NAME]"
+Reset transient health for a pool.
+.TP
+.BI proxy " test POOL [--url URL]"
+Validate rotation and connectivity against an HTTPS target.
+.PP
+Policies are
+.BR sticky ,
+.BR round-robin ,
+.BR random ,
+.BR weighted ,
+.BR least-latency ,
+and
+.BR failover .
+Supported transports are HTTP forward, HTTPS CONNECT, SOCKS4, SOCKS5, and
+SOCKS5h. Credentials use secret references and are redacted from persistence.
+.SH PLUGINS, REPORTS, AND MCP
+.TP
+.BI plugin " install SOURCE [--no-activate]"
+Install a directory or ZIP containing morsa-plugin.json.
+.TP
+.BI plugin " inspect ID"
+Inspect all installed versions and manifest validation.
+.TP
+.BI plugin " update SOURCE [--no-activate]"
+Install and normally activate a newer package version.
+.TP
+.BI plugin " activate ID VERSION"
+Atomically select one installed version.
+.TP
+.BI plugin " rollback ID"
+Select the previous valid version.
+.TP
+.BI plugin " remove ID [--version VERSION]"
+Remove one or all versions.
+.TP
+.BI plugin " run ID OPERATION [--input JSON] [--timeout SECONDS]"
+Invoke the morsa-plugin/1 JSONL process contract.
+.TP
+.BI report " json|html|csv [--output FILE] [--include-sensitive]"
+Write a versioned report. Sensitive values are pseudonymized by default.
+.TP
+.BI report " bundle [--output FILE] [--redact] [--include-sensitive]"
+Create a reproducible evidence bundle; redacted bundles omit artifact payloads.
+.TP
+.BI graph " export [--format graphml|gexf|dot|csv] [--output FILE]"
+Export the correlation graph.
+.PP
+The MCP server is the separately installed
+.B morsa-mcp
+helper under libexec. It transports MCP exclusively over standard input/output;
+diagnostic logs are written only to standard error.
+.SH FILES
+.TP
+.I morsa.toml
+Project configuration. The XDG user fallback is
+.IR $XDG_CONFIG_HOME/morsa/config.toml .
+Network rate/timeout/query budgets, artifact budgets/sandbox, security redaction,
+private-network policy, and proxy profiles are validated and applied at startup.
+.TP
+.I morsa.db
+SQLite workspace database. WAL sidecars can exist while Morsa is running.
+.TP
+.I artifacts/
+SHA-256 content-addressable artifact store.
+.TP
+.I .morsa/plugins/
+Versioned plugin catalog and active-version pointers.
+.SH ENVIRONMENT
+.TP
+.BR HTTP_PROXY , " " HTTPS_PROXY , " " ALL_PROXY , " " NO_PROXY
+Standard proxy selection variables. NO_PROXY always takes precedence for matching
+destinations.
+.TP
+.B MORSA_SEARXNG_URL
+Base URL for an explicitly configured SearXNG provider.
+.TP
+.B MORSA_PARSER_HOST
+Path to the parser host executable in nonstandard installations.
+.TP
+.B MORSA_PLUGIN_HOST
+Path to the plugin host executable in nonstandard installations.
+.TP
+.BR XDG_CONFIG_HOME , " " XDG_STATE_HOME , " " XDG_CACHE_HOME
+Override Linux configuration, state, and cache roots.
+.SH EXIT STATUS
+.TP
+.B 0
+Requested operation completed successfully.
+.TP
+.B 3
+Policy, scope, or bounded-input rejection used by active commands.
+.TP
+.B 5
+Partial completion with persisted diagnostics.
+.TP
+.B 7
+Cooperative cancellation.
+.TP
+.B 8
+An installed plugin version failed catalog validation.
+.TP
+.B 9
+Plugin runtime or host failure.
+.TP
+.B 10
+Doctor or database health gate failure.
+.PP
+Other failures return nonzero. Machine clients should inspect the JSON error code.
+.SH SECURITY
+Network operations are rejected unless allowed by workspace scope. Redirects are
+revalidated. Proxy authentication, cookies, and handlers are isolated by identity.
+No direct fallback is silent. Parser and plugin boundaries are separate processes.
+.SH SEE ALSO
+Full documentation: https://github.com/h0w4r/morsa/tree/main/docs
+.br
+Security policy: https://github.com/h0w4r/morsa/blob/main/SECURITY.md
+.SH LICENSE
+GPL-3.0-or-later.

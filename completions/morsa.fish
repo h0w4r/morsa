@@ -1,0 +1,45 @@
+# Fish completion for Morsa 1.0. It does not execute Morsa or read workspace state.
+complete -c morsa -f
+
+complete -c morsa -n '__fish_use_subcommand' -a init -d 'Create a workspace'
+complete -c morsa -n '__fish_use_subcommand' -a doctor -d 'Inspect runtime health'
+complete -c morsa -n '__fish_use_subcommand' -a version -d 'Print version information'
+complete -c morsa -n '__fish_use_subcommand' -a project -d 'Inspect a project'
+complete -c morsa -n '__fish_use_subcommand' -a scope -d 'Manage authorized scope'
+complete -c morsa -n '__fish_use_subcommand' -a ingest -d 'Ingest artifacts'
+complete -c morsa -n '__fish_use_subcommand' -a discover -d 'Discover resources'
+complete -c morsa -n '__fish_use_subcommand' -a fetch -d 'Acquire resources'
+complete -c morsa -n '__fish_use_subcommand' -a provider -d 'Manage discovery providers'
+complete -c morsa -n '__fish_use_subcommand' -a run -d 'Run durable pipelines'
+complete -c morsa -n '__fish_use_subcommand' -a analyze -d 'Analyze artifacts'
+complete -c morsa -n '__fish_use_subcommand' -a correlate -d 'Correlate evidence'
+complete -c morsa -n '__fish_use_subcommand' -a recon -d 'Perform DNS reconnaissance'
+complete -c morsa -n '__fish_use_subcommand' -a fingerprint -d 'Fingerprint services'
+complete -c morsa -n '__fish_use_subcommand' -a web -d 'Map web content'
+complete -c morsa -n '__fish_use_subcommand' -a malware -d 'Analyze local risk'
+complete -c morsa -n '__fish_use_subcommand' -a graph -d 'Export graphs'
+complete -c morsa -n '__fish_use_subcommand' -a plugin -d 'Manage plugins'
+complete -c morsa -n '__fish_use_subcommand' -a proxy -d 'Manage proxy pools'
+complete -c morsa -n '__fish_use_subcommand' -a report -d 'Export reports'
+
+complete -c morsa -l project -r -a '(__fish_complete_directories)' -d 'Workspace path'
+complete -c morsa -l json -d 'Emit versioned JSON'
+complete -c morsa -l help -d 'Show help'
+
+complete -c morsa -n '__fish_seen_subcommand_from project' -a status
+complete -c morsa -n '__fish_seen_subcommand_from scope' -a 'add list'
+complete -c morsa -n '__fish_seen_subcommand_from ingest' -a 'file directory url'
+complete -c morsa -n '__fish_seen_subcommand_from discover' -a 'documents history import'
+complete -c morsa -n '__fish_seen_subcommand_from fetch' -a 'pending url'
+complete -c morsa -n '__fish_seen_subcommand_from provider' -a 'list status bootstrap'
+complete -c morsa -n '__fish_seen_subcommand_from run' -a 'full resume'
+complete -c morsa -n '__fish_seen_subcommand_from analyze' -a all
+complete -c morsa -n '__fish_seen_subcommand_from recon' -a 'dns reverse subdomains range axfr'
+complete -c morsa -n '__fish_seen_subcommand_from fingerprint' -a 'http tls banner'
+complete -c morsa -n '__fish_seen_subcommand_from web' -a 'crawl backups'
+complete -c morsa -n '__fish_seen_subcommand_from malware' -a 'scan yara'
+complete -c morsa -n '__fish_seen_subcommand_from graph' -a export
+complete -c morsa -n '__fish_seen_subcommand_from plugin' -a 'list inspect install update activate rollback remove run'
+complete -c morsa -n '__fish_seen_subcommand_from proxy' -a 'pool source import status reset test'
+complete -c morsa -n '__fish_seen_subcommand_from report' -a 'json html csv bundle'
+complete -c morsa -n '__fish_seen_subcommand_from report' -l include-sensitive -d 'Include sensitive values explicitly'

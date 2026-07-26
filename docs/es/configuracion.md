@@ -57,6 +57,17 @@ allow_direct_fallback = false
 overrides por proceso; la imagen OCI indicada debe existir localmente. Las variables
 proxy estándar y `NO_PROXY` conservan la precedencia documentada.
 
+Si Bubblewrap no está disponible, aprovisiona explícitamente la imagen glibc:
+
+```bash
+podman pull mcr.microsoft.com/dotnet/runtime-deps:10.0
+morsa doctor --json
+```
+
+Una instalación self-contained musl usa `runtime-deps:10.0-alpine`. Los builds de
+desarrollo que arrancan `morsa-parser-host.dll` requieren la imagen `runtime:10.0`
+correspondiente; Docker acepta las mismas referencias.
+
 ## Límites
 
 Los valores inválidos fallan antes de ejecutar. Los techos principales incluyen 1.024

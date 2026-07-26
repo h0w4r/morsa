@@ -1,0 +1,322 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing or new release tag (for example v1.0.0-rc.1)
+        required: true
+        type: string
+      prerelease:
+        description: Mark the GitHub release as a prerelease
+        required: true
+        default: true
+        type: boolean
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  DOTNET_NOLOGO: "1"
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+jobs:
+  foca-differential:
+    name: Differential parity against pinned FOCA
+    runs-on: windows-2022
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Check out Morsa source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Check out pinned FOCA baseline
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: ElevenPaths/FOCA
+          ref: 754453ad7f9579a6021c484d5014a3cd12fd0e35
+          path: .cache/upstream/foca
+          fetch-depth: 1
+
+      - name: Install pinned .NET SDK
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: global.json
+
+      - name: Build exact FOCA compatibility runner
+        shell: pwsh
+        run: dotnet build tools/FocaDifferential/FocaRunner.csproj --configuration Release
+
+      - name: Compare Morsa with the FOCA baseline
+        shell: pwsh
+        run: >-
+          dotnet run --project tools/FocaDifferential/Morsa.FocaDifferential.csproj
+          --configuration Release
+          --
+          tools/FocaDifferential/bin/Release/net461/FocaRunner.exe
+          TestResults/foca-differential.json
+
+      - name: Upload differential evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          # Keep this outside release-* so the publishing job downloads only distributable payloads.
+          name: foca-differential-release-gate
+          path: TestResults/foca-differential.json
+          if-no-files-found: error
+          retention-days: 90
+
+  gates:
+    name: Release quality gates
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Install pinned .NET SDK
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: Directory.Packages.props
+
+      - name: Validate semantic version
+        run: |
+          version="${RELEASE_TAG#v}"
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]
+          echo "MORSA_VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Restore and audit
+        run: dotnet restore Morsa.slnx --disable-parallel
+
+      - name: Build release source
+        run: dotnet build Morsa.slnx --configuration Release --no-restore
+
+      - name: Run release test matrix
+        run: |
+          dotnet test tests/Morsa.UnitTests/Morsa.UnitTests.csproj --configuration Release --no-build --logger "trx;LogFileName=unit.trx" --results-directory TestResults
+          dotnet test tests/Morsa.IntegrationTests/Morsa.IntegrationTests.csproj --configuration Release --no-build --logger "trx;LogFileName=integration.trx" --results-directory TestResults
+          dotnet test examples/Morsa.CommercialPlugins.Tests/Morsa.CommercialPlugins.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=commercial-plugins.trx" --results-directory TestResults
+
+      - name: Upload gate evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-gate-evidence
+          path: TestResults/**
+          if-no-files-found: error
+          retention-days: 90
+
+  binaries:
+    name: Package ${{ matrix.rid }}
+    needs: [gates, foca-differential]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: linux-x64
+            native_packages: "true"
+          - rid: linux-arm64
+            native_packages: "true"
+          - rid: linux-musl-x64
+            native_packages: "false"
+          - rid: linux-musl-arm64
+            native_packages: "false"
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Install pinned .NET SDK
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: global.json
+
+      - name: Install native packaging tools
+        if: matrix.native_packages == 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends rpm
+
+      - name: Build distribution payload
+        run: bash scripts/build-release.sh --version "${RELEASE_TAG#v}" --rid "${{ matrix.rid }}"
+
+      - name: Build DEB and RPM
+        if: matrix.native_packages == 'true'
+        run: |
+          bash scripts/package-deb.sh --version "${RELEASE_TAG#v}" --rid "${{ matrix.rid }}"
+          bash scripts/package-rpm.sh --version "${RELEASE_TAG#v}" --rid "${{ matrix.rid }}"
+
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          path: artifacts/stage/${{ matrix.rid }}
+          format: spdx-json
+          output-file: artifacts/dist/morsa-${{ matrix.rid }}.spdx.json
+          upload-artifact: false
+
+      - name: Generate CycloneDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          path: artifacts/stage/${{ matrix.rid }}
+          format: cyclonedx-json
+          output-file: artifacts/dist/morsa-${{ matrix.rid }}.cdx.json
+          upload-artifact: false
+
+      - name: Attest SPDX inventory for every binary package
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
+        with:
+          subject-path: |
+            artifacts/dist/morsa-*.tar.gz
+            artifacts/dist/morsa-*.deb
+            artifacts/dist/morsa-*.rpm
+          sbom-path: artifacts/dist/morsa-${{ matrix.rid }}.spdx.json
+
+      - name: Normalize SBOM file names
+        run: |
+          version="${RELEASE_TAG#v}"
+          mv "artifacts/dist/morsa-${{ matrix.rid }}.spdx.json" \
+            "artifacts/dist/morsa-${version}-${{ matrix.rid }}.spdx.json"
+          mv "artifacts/dist/morsa-${{ matrix.rid }}.cdx.json" \
+            "artifacts/dist/morsa-${version}-${{ matrix.rid }}.cdx.json"
+
+      - name: Generate per-RID checksums
+        run: bash scripts/generate-checksums.sh artifacts/dist "SHA256SUMS-${{ matrix.rid }}"
+
+      - name: Attest all distributable files with Sigstore OIDC
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
+        with:
+          subject-checksums: artifacts/dist/SHA256SUMS-${{ matrix.rid }}
+
+      - name: Upload release payload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-${{ matrix.rid }}
+          path: artifacts/dist/*
+          if-no-files-found: error
+          retention-days: 90
+
+  release:
+    name: Publish GitHub release
+    needs: [binaries, oci]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Download all packages
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          pattern: release-*
+          path: artifacts/release
+          merge-multiple: true
+
+      - name: Generate canonical checksum manifest
+        run: bash scripts/generate-checksums.sh artifacts/release SHA256SUMS
+
+      - name: Verify release payload
+        run: bash scripts/verify-release.sh --directory artifacts/release --version "${RELEASE_TAG#v}"
+
+      - name: Attest complete checksum manifest
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
+        with:
+          subject-checksums: artifacts/release/SHA256SUMS
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          prerelease=""
+          if [[ "$RELEASE_TAG" == *-* || "$INPUT_PRERELEASE" == "true" ]]; then
+            prerelease="--prerelease"
+          fi
+          target=""
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            target="--target $GITHUB_SHA"
+          else
+            target="--verify-tag"
+          fi
+          # shellcheck disable=SC2086
+          gh release create "$RELEASE_TAG" artifacts/release/* $target $prerelease --generate-notes --title "Morsa ${RELEASE_TAG#v}"
+
+  oci:
+    name: Publish multi-architecture OCI image
+    needs: [gates, foca-differential]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Log in to GHCR
+        uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7 # v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+
+      - name: Derive OCI metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ env.RELEASE_TAG }}
+            type=raw,value=latest,enable=${{ github.event_name == 'push' && !contains(env.RELEASE_TAG, '-') }}
+
+      - name: Build and push OCI image
+        id: push
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          file: packaging/oci/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: VERSION=${{ env.RELEASE_TAG }}
+          provenance: mode=max
+          sbom: true
+
+      - name: Attest OCI provenance with Sigstore OIDC
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true

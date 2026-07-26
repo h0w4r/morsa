@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+
+# Package managers preserve mode bits, but enforce executable helper permissions.
+chmod 0755 /usr/bin/morsa
+chmod 0755 /usr/libexec/morsa/morsa-parser-host
+chmod 0755 /usr/libexec/morsa/morsa-plugin-host
+chmod 0755 /usr/libexec/morsa/morsa-mcp
+
+if command -v mandb >/dev/null 2>&1; then
+  mandb -q || true
+fi
+
+exit 0

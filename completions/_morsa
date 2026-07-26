@@ -1,0 +1,60 @@
+#compdef morsa
+
+# Zsh completion for the stable Morsa 1.0 command tree.
+_morsa()
+{
+  local -a commands
+  commands=(
+    'init:Create a self-contained workspace'
+    'doctor:Inspect runtime and workspace health'
+    'version:Print version and contract information'
+    'project:Inspect a workspace project'
+    'scope:Manage authorized scope entries'
+    'ingest:Ingest local or remote artifacts'
+    'discover:Discover public documents and history'
+    'fetch:Acquire pending or explicit URLs'
+    'provider:Inspect and bootstrap discovery providers'
+    'run:Run or resume a durable pipeline'
+    'analyze:Analyze stored artifacts'
+    'correlate:Build traceable entities and relationships'
+    'recon:Run scoped DNS reconnaissance'
+    'fingerprint:Fingerprint HTTP TLS or TCP services'
+    'web:Map web content or validate backup candidates'
+    'malware:Perform local static and YARA analysis'
+    'graph:Export relationship graphs'
+    'plugin:Manage morsa-plugin/1 packages'
+    'proxy:Manage proxy pools and rotation'
+    'report:Export reports and evidence bundles'
+  )
+
+  _arguments -C \
+    '1:command:->command' \
+    '*::argument:->arguments'
+
+  case "$state" in
+    command)
+      _describe -t commands 'morsa command' commands ;;
+    arguments)
+      case "$words[2]" in
+        project) _values 'project command' status ;;
+        scope) _values 'scope command' add list ;;
+        ingest) _values 'ingest command' file directory url ;;
+        discover) _values 'discovery command' documents history import ;;
+        fetch) _values 'fetch command' pending url ;;
+        provider) _values 'provider command' list status bootstrap ;;
+        run) _values 'pipeline command' full resume ;;
+        analyze) _values 'analysis command' all ;;
+        recon) _values 'recon command' dns reverse subdomains range axfr ;;
+        fingerprint) _values 'fingerprint command' http tls banner ;;
+        web) _values 'web command' crawl backups ;;
+        malware) _values 'malware command' scan yara ;;
+        graph) _values 'graph command' export ;;
+        plugin) _values 'plugin command' list inspect install update activate rollback remove run ;;
+        proxy) _values 'proxy command' pool source import status reset test ;;
+        report) _values 'report command' json html csv bundle ;;
+        *) _arguments '--project[workspace path]:directory:_directories' '--json[emit JSON]' '--help[show help]' ;;
+      esac ;;
+  esac
+}
+
+_morsa "$@"

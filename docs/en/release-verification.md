@@ -29,6 +29,10 @@ Install a current GitHub CLI and authenticate if required by its attestation API
 ```bash
 gh attestation verify morsa-1.0.0-linux-x64.tar.gz \
   --repo h0w4r/morsa
+
+# Native packages are independent attested subjects built from the same RID stage.
+gh attestation verify morsa-1.0.0-linux-x64.deb --repo h0w4r/morsa
+gh attestation verify morsa-1.0.0-linux-x64.rpm --repo h0w4r/morsa
 ```
 
 Inspect JSON when validating policy automation:

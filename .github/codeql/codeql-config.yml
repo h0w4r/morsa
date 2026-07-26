@@ -1,0 +1,10 @@
+name: Morsa CodeQL configuration
+paths:
+  - src
+  - tests
+paths-ignore:
+  - artifacts
+  - .dotnet
+queries:
+  - uses: security-extended
+  - uses: security-and-quality
