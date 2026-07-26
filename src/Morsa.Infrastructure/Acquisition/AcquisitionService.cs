@@ -14,6 +14,7 @@ namespace Morsa.Infrastructure.Acquisition;
 public sealed class AcquisitionService(
     IMorsaStore store,
     RotatingHttpClient http,
+    IProxyPool proxyRuntime,
     IArtifactStorage storage,
     NetworkScopeValidator scopeValidator,
     MorsaConfiguration configuration)
@@ -31,72 +32,85 @@ public sealed class AcquisitionService(
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumBytes);
         if (maximumRedirects is < 0 or > 20) throw new ArgumentOutOfRangeException(nameof(maximumRedirects));
         var current = new Uri(resource.Url, UriKind.Absolute);
-        for (var redirect = 0; redirect <= maximumRedirects; redirect++)
+        Guid? retainedLeaseId = null;
+        try
         {
-            var validatedAddresses = await scopeValidator.ResolveAllowedAddressesAsync(
-                projectId, current, ActivityMode.Passive, allowPrivateNetworks, cancellationToken).ConfigureAwait(false);
-            if (validatedAddresses is null)
+            for (var redirect = 0; redirect <= maximumRedirects; redirect++)
             {
-                resource.Status = "scope_rejected";
-                resource.LastError = "URL is outside authorized scope or resolves to a blocked address class.";
-                await store.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-                throw new UnauthorizedAccessException(resource.LastError);
-            }
+                var validatedAddresses = await scopeValidator.ResolveAllowedAddressesAsync(
+                    projectId, current, ActivityMode.Passive, allowPrivateNetworks, cancellationToken).ConfigureAwait(false);
+                if (validatedAddresses is null)
+                {
+                    resource.Status = "scope_rejected";
+                    resource.LastError = "URL is outside authorized scope or resolves to a blocked address class.";
+                    await store.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                    throw new UnauthorizedAccessException(resource.LastError);
+                }
 
-            var result = await http.FetchPinnedAsync(
-                current,
-                proxyPool,
-                new NetworkRequestContext(runId, null, $"fetch:{resource.Id}", current, "acquisition", resource.ProviderId),
-                maximumBytes,
-                validatedAddresses,
-                cancellationToken).ConfigureAwait(false);
-            if ((int)result.StatusCode is >= 300 and < 400 && TryGetLocation(result, current, out var next))
-            {
-                // Preserve transport security across redirects; an HTTPS origin cannot silently downgrade acquisition to HTTP.
-                if (current.Scheme == Uri.UriSchemeHttps && next.Scheme != Uri.UriSchemeHttps)
+                var result = await http.FetchPinnedAsync(
+                    current,
+                    proxyPool,
+                    new NetworkRequestContext(runId, null, $"fetch:{resource.Id}", current, "acquisition", resource.ProviderId),
+                    maximumBytes,
+                    validatedAddresses,
+                    cancellationToken).ConfigureAwait(false);
+                retainedLeaseId = result.ProxyLeaseId ?? retainedLeaseId;
+                if ((int)result.StatusCode is >= 300 and < 400 && TryGetLocation(result, current, out var next))
+                {
+                    // Preserve transport security across redirects; an HTTPS origin cannot silently downgrade acquisition to HTTP.
+                    if (current.Scheme == Uri.UriSchemeHttps && next.Scheme != Uri.UriSchemeHttps)
+                    {
+                        resource.Status = "failed";
+                        resource.LastError = "HTTPS redirect downgrade was rejected.";
+                        await store.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                        throw new HttpRequestException(resource.LastError);
+                    }
+
+                    current = next;
+                    continue;
+                }
+
+                if ((int)result.StatusCode is < 200 or >= 300)
                 {
                     resource.Status = "failed";
-                    resource.LastError = "HTTPS redirect downgrade was rejected.";
+                    resource.LastError = $"HTTP {(int)result.StatusCode}";
                     await store.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
                     throw new HttpRequestException(resource.LastError);
                 }
 
-                current = next;
-                continue;
-            }
-
-            if ((int)result.StatusCode is < 200 or >= 300)
-            {
-                resource.Status = "failed";
-                resource.LastError = $"HTTP {(int)result.StatusCode}";
+                await using var stream = new MemoryStream(result.Content, writable: false);
+                var stored = await storage.StoreAsync(stream, Path.GetFileName(current.LocalPath), maximumBytes, cancellationToken)
+                    .ConfigureAwait(false);
+                var artifact = new Artifact
+                {
+                    RunId = runId,
+                    SourceUri = current.AbsoluteUri,
+                    StoredPath = stored.Path,
+                    Sha256 = stored.Sha256,
+                    Size = stored.Size,
+                    Kind = stored.Kind,
+                    MimeType = stored.MimeType ?? result.ContentType,
+                };
+                store.Add(artifact);
+                resource.Status = "downloaded";
+                resource.Url = current.AbsoluteUri;
                 await store.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-                throw new HttpRequestException(resource.LastError);
+                return artifact;
             }
 
-            await using var stream = new MemoryStream(result.Content, writable: false);
-            var stored = await storage.StoreAsync(stream, Path.GetFileName(current.LocalPath), maximumBytes, cancellationToken)
-                .ConfigureAwait(false);
-            var artifact = new Artifact
-            {
-                RunId = runId,
-                SourceUri = current.AbsoluteUri,
-                StoredPath = stored.Path,
-                Sha256 = stored.Sha256,
-                Size = stored.Size,
-                Kind = stored.Kind,
-                MimeType = stored.MimeType ?? result.ContentType,
-            };
-            store.Add(artifact);
-            resource.Status = "downloaded";
-            resource.Url = current.AbsoluteUri;
+            resource.Status = "failed";
+            resource.LastError = "Redirect budget exhausted.";
             await store.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-            return artifact;
+            throw new HttpRequestException(resource.LastError);
         }
-
-        resource.Status = "failed";
-        resource.LastError = "Redirect budget exhausted.";
-        await store.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-        throw new HttpRequestException(resource.LastError);
+        finally
+        {
+            if (retainedLeaseId is { } leaseId)
+            {
+                // The lease remains sticky across redirects but must not consume capacity after this resource finishes.
+                await proxyRuntime.ReleaseAsync(leaseId, CancellationToken.None).ConfigureAwait(false);
+            }
+        }
     }
 
     public async Task<(int Downloaded, int Failed)> FetchPendingAsync(

@@ -18,6 +18,7 @@ public sealed record HttpFetchResult(
     string? ContentType,
     IReadOnlyDictionary<string, string[]> Headers,
     Guid? ProxyEndpointId,
+    Guid? ProxyLeaseId,
     int Attempts);
 
 /// <summary>Executes aggressively rotating, bounded and fully journaled HTTP requests.</summary>
@@ -157,6 +158,7 @@ public sealed class RotatingHttpClient(
                         response.Content.Headers.ContentType?.MediaType,
                         headers,
                         lease is null ? null : endpoint?.Id,
+                        lease?.Id,
                         attempt);
                 }
                 finally
