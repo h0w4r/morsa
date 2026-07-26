@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>Morsa.CommercialPluginCommon</AssemblyName>
+    <RootNamespace>Morsa.CommercialPluginCommon</RootNamespace>
+  </PropertyGroup>
+</Project>

@@ -34,6 +34,7 @@ public sealed class InitCommand(CliOutput output) : AsyncCommand<InitSettings>
         var initializer = provider.GetRequiredService<IStoreInitializer>();
         var store = provider.GetRequiredService<IMorsaStore>();
         var workspace = provider.GetRequiredService<IWorkspaceContext>();
+        var configuration = provider.GetRequiredService<MorsaConfiguration>();
         await initializer.InitializeAsync(cancellationToken).ConfigureAwait(false);
 
         var project = await store.Projects.SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
@@ -41,8 +42,9 @@ public sealed class InitCommand(CliOutput output) : AsyncCommand<InitSettings>
         {
             project = new MorsaProject
             {
-                Name = settings.Name ?? new DirectoryInfo(root).Name,
+                Name = settings.Name ?? (configuration.Project.Name == "morsa-project" ? new DirectoryInfo(root).Name : configuration.Project.Name),
                 RootPath = root,
+                DefaultMode = Enum.Parse<ActivityMode>(configuration.Project.DefaultMode, true),
             };
             store.Add(project);
             await store.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
@@ -50,9 +52,10 @@ public sealed class InitCommand(CliOutput output) : AsyncCommand<InitSettings>
 
         if (!File.Exists(workspace.ConfigurationPath))
         {
+            configuration.Project.Name = project.Name;
             await MorsaConfigurationLoader.SaveAsync(
                 workspace.ConfigurationPath,
-                new MorsaConfiguration { Project = new ProjectConfiguration { Name = project.Name } },
+                configuration,
                 cancellationToken).ConfigureAwait(false);
         }
 
@@ -161,4 +164,3 @@ internal static class CommandRegistration
         return services;
     }
 }
-

@@ -1,5 +1,5 @@
-using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
 using Morsa.Application.Abstractions;
 using Morsa.Domain.Discovery;
 
@@ -21,7 +21,17 @@ public sealed class DiscoveryService(IEnumerable<ISearchProvider> providers, IMo
             .Select(item => item.CanonicalUrl).ToHashSetAsync(StringComparer.OrdinalIgnoreCase, cancellationToken)
             .ConfigureAwait(false);
         var added = 0;
-        foreach (var provider in providers.Where(provider => requestedProviders is null || requestedProviders.Contains(provider.Id)))
+        var available = providers.ToArray();
+        var selected = available.Where(provider => requestedProviders is null || requestedProviders.Contains(provider.Id, StringComparer.OrdinalIgnoreCase)).ToArray();
+        if (requestedProviders is not null)
+        {
+            foreach (var missing in requestedProviders.Where(id => !available.Any(provider => provider.Id.Equals(id, StringComparison.OrdinalIgnoreCase))))
+            {
+                failures.Add(missing);
+                store.Add(new ProviderRequest { RunId = runId, ProviderId = missing, Query = query.Target, Status = "failed", AttemptCount = 1, LastError = "Provider is not registered." });
+            }
+        }
+        foreach (var provider in selected)
         {
             var journal = new ProviderRequest { RunId = runId, ProviderId = provider.Id, Query = query.Target, Status = "running" };
             store.Add(journal);
@@ -53,7 +63,7 @@ public sealed class DiscoveryService(IEnumerable<ISearchProvider> providers, IMo
 
                 journal.Status = "completed";
             }
-            catch (Exception exception) when (exception is HttpRequestException or JsonException or InvalidDataException)
+            catch (Exception exception) when (exception is HttpRequestException or JsonException or InvalidDataException or InvalidOperationException or UnauthorizedAccessException)
             {
                 journal.Status = "failed";
                 journal.LastError = exception.Message;

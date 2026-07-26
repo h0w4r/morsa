@@ -6,7 +6,7 @@ using Spectre.Console.Cli;
 
 namespace Morsa.Cli.Commands;
 
-public sealed class FullPipelineSettings : WorkspaceSettings
+public sealed class FullPipelineSettings : ProxyAwareSettings
 {
     [CommandArgument(0, "<TARGET>")]
     public required string Target { get; init; }
@@ -16,9 +16,6 @@ public sealed class FullPipelineSettings : WorkspaceSettings
 
     [CommandOption("--providers <PROVIDERS>")]
     public string Providers { get; init; } = "searxng,duckduckgo,commoncrawl";
-
-    [CommandOption("--proxy-pool <POOL>")]
-    public string? ProxyPool { get; init; }
 
     [CommandOption("--active-crawl")]
     public bool ActiveCrawl { get; init; }
@@ -35,12 +32,13 @@ public sealed class FullPipelineCommand(
     protected override async Task<int> ExecuteAsync(CommandContext context, FullPipelineSettings settings, CancellationToken cancellationToken)
     {
         var project = await CommandHelpers.RequireProjectAsync(initializer, store, workspace, cancellationToken).ConfigureAwait(false);
+        var proxyPool = await ProxyCliHelpers.ResolvePoolAsync(store, settings, cancellationToken).ConfigureAwait(false);
         var result = await pipeline.RunAsync(
             project.Id,
             settings.Target.Trim().TrimEnd('.').ToLowerInvariant(),
             settings.Types.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
             settings.Providers.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
-            settings.ProxyPool,
+            proxyPool,
             settings.ActiveCrawl,
             cancellationToken).ConfigureAwait(false);
         output.Write(result, settings.Json, result.RunId.ToString(), result.Coverage);
@@ -48,11 +46,7 @@ public sealed class FullPipelineCommand(
     }
 }
 
-public sealed class ResumePipelineSettings : WorkspaceSettings
-{
-    [CommandOption("--proxy-pool <POOL>")]
-    public string? ProxyPool { get; init; }
-}
+public sealed class ResumePipelineSettings : ProxyAwareSettings;
 
 /// <summary>Resumes pending acquisition and parser work idempotently.</summary>
 public sealed class ResumePipelineCommand(
@@ -65,7 +59,8 @@ public sealed class ResumePipelineCommand(
     protected override async Task<int> ExecuteAsync(CommandContext context, ResumePipelineSettings settings, CancellationToken cancellationToken)
     {
         var project = await CommandHelpers.RequireProjectAsync(initializer, store, workspace, cancellationToken).ConfigureAwait(false);
-        var result = await pipeline.ResumeAsync(project.Id, settings.ProxyPool, cancellationToken).ConfigureAwait(false);
+        var proxyPool = await ProxyCliHelpers.ResolvePoolAsync(store, settings, cancellationToken).ConfigureAwait(false);
+        var result = await pipeline.ResumeAsync(project.Id, proxyPool, cancellationToken).ConfigureAwait(false);
         output.Write(result, settings.Json, result.RunId.ToString(), result.Coverage);
         return result.Coverage == "complete" ? 0 : 5;
     }

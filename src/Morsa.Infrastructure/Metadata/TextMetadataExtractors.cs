@@ -34,9 +34,14 @@ public sealed class SvgMetadataExtractor : IArtifactExtractor
             };
             await using var stream = File.OpenRead(artifact.Path);
             using var reader = XmlReader.Create(stream, settings);
-            while (await reader.ReadAsync().ConfigureAwait(false))
+            while (!reader.EOF)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                if (observations.Count >= 100_000)
+                {
+                    diagnostics.Add(new("svg.observation_budget", "SVG metadata observation budget reached.", true));
+                    break;
+                }
                 if (reader.NodeType == XmlNodeType.Comment && !string.IsNullOrWhiteSpace(reader.Value))
                 {
                     observations.Add(MetadataUtilities.Observation(
@@ -60,6 +65,25 @@ public sealed class SvgMetadataExtractor : IArtifactExtractor
                         }
                     }
                 }
+
+                if (reader.NodeType == XmlNodeType.Element && reader.LocalName is "creator" or "title" or "description")
+                {
+                    var localName = reader.LocalName;
+                    var value = await reader.ReadElementContentAsStringAsync().ConfigureAwait(false);
+                    if (!string.IsNullOrWhiteSpace(value))
+                    {
+                        observations.Add(MetadataUtilities.Observation(
+                            artifact.ArtifactId,
+                            localName == "creator" ? "author" : localName == "description" ? "comments" : "title",
+                            value,
+                            Id,
+                            Version,
+                            $"svg/{localName}"));
+                    }
+                    continue;
+                }
+
+                await reader.ReadAsync().ConfigureAwait(false);
             }
         }
         catch (XmlException exception)
@@ -104,10 +128,11 @@ public sealed partial class TextMetadataExtractor : IArtifactExtractor
                 var value = line[(separator + 1)..].Trim();
                 if (!string.IsNullOrWhiteSpace(value))
                 {
+                    var category = MapKey(key);
                     observations.Add(MetadataUtilities.Observation(
                         artifact.ArtifactId,
-                        MapKey(key),
-                        value,
+                        category,
+                        category == "credential_indicator" ? "[redacted]" : value,
                         Id,
                         Version,
                         $"line:{index + 1}"));
@@ -119,6 +144,8 @@ public sealed partial class TextMetadataExtractor : IArtifactExtractor
                 observations.Add(MetadataUtilities.Observation(
                     artifact.ArtifactId, "email", match.Value, Id, Version, $"line:{index + 1}", 0.9));
             }
+            if (observations.Count >= 100_000)
+                return new ExtractionResult(observations.DistinctBy(item => (item.Category, item.NormalizedValue)).ToArray(), [], [new("text.observation_budget", "Text metadata observation budget reached.", true)]);
         }
 
         return new ExtractionResult(observations.DistinctBy(item => (item.Category, item.NormalizedValue)).ToArray(), [], []);
@@ -130,14 +157,18 @@ public sealed partial class TextMetadataExtractor : IArtifactExtractor
         return normalized switch
         {
             "full address" or "address" or "server" or "tcpbrowseraddress" => "server",
+            "gatewayhostname" or "sslproxyhost" or "httpbrowseraddress" => "server",
             "username" or "user name" or "usernamehint" => "username",
             "domain" => "domain",
             "clientname" or "hostname" => "hostname",
+            "password" or "password 51" or "passwordscrambled" or "clearpassword" => "credential_indicator",
+            "alternate shell" or "remoteapplicationprogram" or "initialprogram" => "application",
+            "clientdirectory" or "workdirectory" => "path",
+            _ when normalized.Contains("printer", StringComparison.Ordinal) => "printer",
             _ => $"config.{normalized.Replace(' ', '_')}",
         };
     }
 
-    [GeneratedRegex(@"(?<![\w.+-])[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}(?![\w.-])", RegexOptions.NonBacktracking)]
+    [GeneratedRegex(@"(?<![\w.+-])[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}(?![\w.-])")]
     private static partial Regex EmailRegex();
 }
-

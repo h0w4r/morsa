@@ -7,6 +7,8 @@ coverage/
 
 # Project-local SDK and caches
 .dotnet/
+.dotnet-linux/
+.dotnet-windows/
 .cache/
 .packages/
 
@@ -43,4 +45,3 @@ Thumbs.db
 docs/internal/
 plans/
 backlog/
-

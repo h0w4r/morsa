@@ -1,0 +1,14 @@
+{
+  "id": "morsa.example.echo",
+  "name": "Morsa Example Echo Plugin",
+  "version": "1.0.0",
+  "author": "Morsa contributors",
+  "apiVersion": "1",
+  "kind": "process",
+  "entryPoint": "morsa-example-plugin",
+  "arguments": [],
+  "permissions": [],
+  "secretEnvironmentVariables": [],
+  "sha256": null,
+  "description": "Returns the supplied JSON input through morsa-plugin/1."
+}

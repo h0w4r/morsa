@@ -1,0 +1,8 @@
+[WFClient]
+Version=2
+[ApplicationServers]
+Demo=demo
+[Demo]
+Address=server.example.test
+Username=seed@example.test
+Domain=EXAMPLE

@@ -6,22 +6,13 @@ namespace Morsa.Application.Services;
 /// <summary>Coordinates extraction and persists only validated neutral observations.</summary>
 public sealed class ArtifactAnalysisService(
     IMorsaStore store,
-    IArtifactExtractorRegistry extractors)
+    IArtifactParserGateway parser)
 {
     public async Task<ExtractionResult> AnalyzeAsync(
         Artifact artifact,
         ExtractionOptions options,
         CancellationToken cancellationToken)
     {
-        var extractor = extractors.Select(artifact.Kind);
-        if (extractor is null)
-        {
-            return new ExtractionResult(
-                [],
-                [],
-                [new ExtractionDiagnostic("artifact.unsupported", $"No extractor supports {artifact.Kind}.", true)]);
-        }
-
         var context = new ArtifactContext(
             artifact.Id,
             artifact.StoredPath,
@@ -29,7 +20,7 @@ public sealed class ArtifactAnalysisService(
             artifact.Kind,
             artifact.MimeType);
 
-        var result = await extractor.ExtractAsync(context, options, cancellationToken).ConfigureAwait(false);
+        var result = await parser.ParseAsync(context, options, cancellationToken).ConfigureAwait(false);
 
         // The application layer owns persistence so extractors cannot partially commit.
         store.AddRange(result.Observations.Where(IsValid));
@@ -43,4 +34,3 @@ public sealed class ArtifactAnalysisService(
         !string.IsNullOrWhiteSpace(observation.OriginalValue) &&
         observation.Confidence is >= 0 and <= 1;
 }
-

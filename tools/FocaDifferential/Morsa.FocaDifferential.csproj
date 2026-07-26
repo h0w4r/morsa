@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>morsa-foca-differential</AssemblyName>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/Morsa.Infrastructure/Morsa.Infrastructure.csproj" />
+    <Compile Include="MorsaDifferentialProgram.cs" />
+    <Compile Include="../../tests/Morsa.UnitTests/LegacySyntheticCorpus.cs" Link="Corpus/LegacySyntheticCorpus.cs" />
+    <PackageReference Include="OpenMcdf" />
+  </ItemGroup>
+</Project>

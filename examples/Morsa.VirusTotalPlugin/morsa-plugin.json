@@ -1,0 +1,14 @@
+{
+  "id": "morsa.provider.virustotal",
+  "name": "Morsa VirusTotal Provider",
+  "version": "1.0.0",
+  "author": "Morsa contributors",
+  "apiVersion": "1",
+  "kind": "process",
+  "entryPoint": "morsa-virustotal-plugin",
+  "arguments": [],
+  "permissions": ["network", "filesystem:read", "secrets"],
+  "secretEnvironmentVariables": ["VT_API_KEY", "VT_API_BASE_URL"],
+  "sha256": null,
+  "description": "VirusTotal v3 hash lookup and explicit file upload over morsa-plugin/1."
+}

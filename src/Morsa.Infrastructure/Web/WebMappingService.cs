@@ -14,7 +14,7 @@ namespace Morsa.Infrastructure.Web;
 public sealed class WebMappingService(
     IMorsaStore store,
     RotatingHttpClient http,
-    ScopePolicy scopePolicy)
+    NetworkScopeValidator scopeValidator)
 {
     public async Task<IReadOnlyList<DiscoveredResource>> CrawlAsync(
         Guid projectId,
@@ -25,29 +25,37 @@ public sealed class WebMappingService(
         string? proxyPool,
         CancellationToken cancellationToken)
     {
-        var scope = await store.ScopeEntries.Where(item => item.ProjectId == projectId).ToListAsync(cancellationToken)
-            .ConfigureAwait(false);
         var queue = new Queue<(Uri Uri, int Depth)>();
         var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var knownResources = await store.DiscoveredResources
+            .Where(item => item.ProjectId == projectId)
+            .Select(item => item.CanonicalUrl)
+            .ToHashSetAsync(StringComparer.OrdinalIgnoreCase, cancellationToken)
+            .ConfigureAwait(false);
         var discovered = new List<DiscoveredResource>();
         queue.Enqueue((root, 0));
         while (queue.Count > 0 && visited.Count < maximumPages)
         {
             var (uri, depth) = queue.Dequeue();
             var canonical = DiscoveryUtilities.Canonicalize(uri.AbsoluteUri);
-            if (!visited.Add(canonical) || !scopePolicy.IsUriAllowed(uri, ActivityMode.Active, scope, false))
+            if (!visited.Add(canonical))
             {
                 continue;
             }
 
+            var validatedAddresses = await scopeValidator.ResolveAllowedAddressesAsync(
+                projectId, uri, ActivityMode.Active, false, cancellationToken).ConfigureAwait(false);
+            if (validatedAddresses is null) continue;
+
             HttpFetchResult result;
             try
             {
-                result = await http.FetchAsync(
+                result = await http.FetchPinnedAsync(
                     uri,
                     proxyPool,
                     new NetworkRequestContext(runId, null, $"web:{root.Host}", uri, "web-map", null),
                     4 * 1024 * 1024,
+                    validatedAddresses,
                     cancellationToken).ConfigureAwait(false);
             }
             catch (HttpRequestException)
@@ -80,8 +88,7 @@ public sealed class WebMappingService(
                     Title = link.Title,
                     Status = "observed",
                 };
-                if (!await store.DiscoveredResources.AnyAsync(item => item.ProjectId == projectId && item.CanonicalUrl == targetCanonical, cancellationToken)
-                        .ConfigureAwait(false))
+                if (knownResources.Add(targetCanonical))
                 {
                     store.Add(resource);
                     discovered.Add(resource);
@@ -118,13 +125,20 @@ public sealed class WebMappingService(
         var findings = new List<Finding>();
         foreach (var candidate in candidates)
         {
+            var validatedAddresses = await scopeValidator.ResolveAllowedAddressesAsync(
+                projectId, candidate, ActivityMode.Aggressive, false, cancellationToken).ConfigureAwait(false);
+            if (validatedAddresses is null)
+            {
+                continue;
+            }
             try
             {
-                var result = await http.FetchAsync(
+                var result = await http.FetchPinnedAsync(
                     candidate,
                     proxyPool,
                     new NetworkRequestContext(runId, null, $"backup:{root.Host}", candidate, "backup-fuzz", null),
                     64 * 1024,
+                    validatedAddresses,
                     cancellationToken).ConfigureAwait(false);
                 if ((int)result.StatusCode is >= 200 and < 300)
                 {
@@ -160,4 +174,3 @@ public sealed class WebMappingService(
         }
     }
 }
-

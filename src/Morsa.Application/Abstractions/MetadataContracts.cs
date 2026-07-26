@@ -51,3 +51,11 @@ public interface IArtifactExtractorRegistry
     IReadOnlyCollection<IArtifactExtractor> All { get; }
 }
 
+/// <summary>Boundary used by the application to parse hostile artifacts outside its process.</summary>
+public interface IArtifactParserGateway
+{
+    Task<ExtractionResult> ParseAsync(
+        ArtifactContext artifact,
+        ExtractionOptions options,
+        CancellationToken cancellationToken);
+}

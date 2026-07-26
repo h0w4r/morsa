@@ -31,6 +31,13 @@ public sealed class ZipXmlMetadataExtractor : IArtifactExtractor
             ["generator"] = "application",
             ["editing-duration"] = "editing_duration",
             ["editing-cycles"] = "revision",
+            ["initial-creator"] = "author",
+            ["printed-by"] = "last_saved_by",
+            ["creator-tool"] = "application",
+            ["language"] = "language",
+            ["template"] = "path",
+            ["date-time"] = "date",
+            ["comment"] = "comments",
         };
 
     public string Id => ExtractorId;
@@ -81,6 +88,13 @@ public sealed class ZipXmlMetadataExtractor : IArtifactExtractor
                     continue;
                 }
 
+                if ((entry.Length > 0 && entry.CompressedLength == 0) ||
+                    (entry.Length > 1024 * 1024 && entry.Length / Math.Max(1, entry.CompressedLength) > 1_000))
+                {
+                    diagnostics.Add(new("zip.compression_ratio", $"Suspicious compression ratio rejected: {entry.FullName}", true));
+                    continue;
+                }
+
                 await using var stream = entry.Open();
                 await ReadXmlAsync(stream, entry.FullName, artifact.ArtifactId, observations, cancellationToken)
                     .ConfigureAwait(false);
@@ -103,7 +117,9 @@ public sealed class ZipXmlMetadataExtractor : IArtifactExtractor
         name.Equals("docProps/app.xml", StringComparison.OrdinalIgnoreCase) ||
         name.Equals("docProps/custom.xml", StringComparison.OrdinalIgnoreCase) ||
         name.Equals("meta.xml", StringComparison.OrdinalIgnoreCase) ||
-        name.EndsWith(".rels", StringComparison.OrdinalIgnoreCase);
+        name.EndsWith(".rels", StringComparison.OrdinalIgnoreCase) ||
+        name.EndsWith("VersionList.xml", StringComparison.OrdinalIgnoreCase) ||
+        name.Contains("versions/", StringComparison.OrdinalIgnoreCase);
 
     private static async Task ReadXmlAsync(
         Stream stream,
@@ -122,15 +138,24 @@ public sealed class ZipXmlMetadataExtractor : IArtifactExtractor
         };
 
         using var reader = XmlReader.Create(stream, settings);
-        while (await reader.ReadAsync().ConfigureAwait(false))
+        string? customProperty = null;
+        while (!reader.EOF)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (observations.Count >= 100_000) return;
             if (reader.NodeType != XmlNodeType.Element || reader.IsEmptyElement)
             {
+                await reader.ReadAsync().ConfigureAwait(false);
                 continue;
             }
 
             var localName = reader.LocalName;
+            if (entryName.Equals("docProps/custom.xml", StringComparison.OrdinalIgnoreCase) && localName == "property")
+            {
+                customProperty = reader.GetAttribute("name");
+                await reader.ReadAsync().ConfigureAwait(false);
+                continue;
+            }
             if (localName == "Relationship")
             {
                 var target = reader.GetAttribute("Target");
@@ -138,18 +163,32 @@ public sealed class ZipXmlMetadataExtractor : IArtifactExtractor
                 {
                     observations.Add(MetadataUtilities.Observation(
                         artifactId,
-                        Uri.TryCreate(target, UriKind.Absolute, out _) ? "url" : "external_relationship",
+                        Uri.TryCreate(target, UriKind.Absolute, out _) ? "url" : LooksLikePath(target) ? "path" : "external_relationship",
                         target,
                         ExtractorId,
                         "1.0.0",
                         $"{entryName}@Target"));
                 }
 
+                await reader.ReadAsync().ConfigureAwait(false);
+                continue;
+            }
+
+            if (customProperty is not null && entryName.Equals("docProps/custom.xml", StringComparison.OrdinalIgnoreCase))
+            {
+                var customValue = await reader.ReadElementContentAsStringAsync().ConfigureAwait(false);
+                if (!string.IsNullOrWhiteSpace(customValue))
+                {
+                    observations.Add(MetadataUtilities.Observation(
+                        artifactId, $"custom.{Slug(customProperty)}", customValue, ExtractorId, "1.0.0", $"{entryName}/{customProperty}", 0.9));
+                }
+                customProperty = null;
                 continue;
             }
 
             if (!ElementCategories.TryGetValue(localName, out var category))
             {
+                await reader.ReadAsync().ConfigureAwait(false);
                 continue;
             }
 
@@ -164,7 +203,15 @@ public sealed class ZipXmlMetadataExtractor : IArtifactExtractor
                     "1.0.0",
                     $"{entryName}/{localName}"));
             }
+            // ReadElementContentAsStringAsync already moves to the following node.
         }
     }
-}
 
+    private static bool LooksLikePath(string value) =>
+        value.StartsWith("\\\\", StringComparison.Ordinal) ||
+        (value.Length > 2 && char.IsLetter(value[0]) && value[1] == ':') ||
+        value.StartsWith("../", StringComparison.Ordinal) || value.StartsWith("/", StringComparison.Ordinal);
+
+    private static string Slug(string value) => new(value.Trim().ToLowerInvariant()
+        .Select(character => char.IsLetterOrDigit(character) ? character : '_').ToArray());
+}

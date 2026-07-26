@@ -207,7 +207,9 @@ public sealed class CommonCrawlSearchProvider(RotatingHttpClient http) : ISearch
 }
 
 /// <summary>Active direct crawler for home pages and sitemaps, bounded to one level.</summary>
-public sealed class DirectCrawlerSearchProvider(RotatingHttpClient http) : ISearchProvider
+public sealed class DirectCrawlerSearchProvider(
+    RotatingHttpClient http,
+    NetworkScopeValidator scopeValidator) : ISearchProvider
 {
     public string Id => "direct-crawler";
 
@@ -223,14 +225,27 @@ public sealed class DirectCrawlerSearchProvider(RotatingHttpClient http) : ISear
         var emitted = 0;
         foreach (var root in roots)
         {
+            if (context.ProjectId is not { } projectId)
+            {
+                throw new InvalidOperationException("Direct crawler requires a project-scoped execution context.");
+            }
+
+            var validatedAddresses = await scopeValidator.ResolveAllowedAddressesAsync(
+                projectId,
+                root,
+                Morsa.Domain.Common.ActivityMode.Active,
+                allowPrivateNetworks: false,
+                cancellationToken).ConfigureAwait(false) ??
+                throw new UnauthorizedAccessException("Direct crawler target is outside authorized active scope or resolves to a blocked address class.");
             HttpFetchResult result;
             try
             {
-                result = await http.FetchAsync(
+                result = await http.FetchPinnedAsync(
                     root,
                     context.ProxyPool,
                     new NetworkRequestContext(context.RunId, context.TaskId, $"crawl:{context.SessionKey}", root, "crawler", Id),
                     8 * 1024 * 1024,
+                    validatedAddresses,
                     cancellationToken).ConfigureAwait(false);
             }
             catch (HttpRequestException)
@@ -255,6 +270,46 @@ public sealed class DirectCrawlerSearchProvider(RotatingHttpClient http) : ISear
                     yield break;
                 }
             }
+        }
+    }
+}
+
+/// <summary>Offline NDJSON/text index selected through MORSA_LOCAL_INDEX.</summary>
+public sealed class LocalIndexSearchProvider : ISearchProvider
+{
+    private readonly string? _path = Environment.GetEnvironmentVariable("MORSA_LOCAL_INDEX");
+    public string Id => "local-index";
+
+    public Task<ProviderHealth> CheckHealthAsync(CancellationToken cancellationToken) => Task.FromResult(
+        _path is not null && File.Exists(_path)
+            ? new ProviderHealth(true, "configured", Path.GetFullPath(_path))
+            : new ProviderHealth(false, "misconfigured", "Set MORSA_LOCAL_INDEX to a text or NDJSON URL index."));
+
+    public async IAsyncEnumerable<SearchResult> SearchAsync(
+        SearchQuery query,
+        SearchExecutionContext context,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        if (_path is null || !File.Exists(_path)) yield break;
+        var emitted = 0;
+        await foreach (var line in File.ReadLinesAsync(_path, cancellationToken).ConfigureAwait(false))
+        {
+            var value = line.Trim();
+            if (value.Length == 0 || value.StartsWith('#')) continue;
+            string? title = null;
+            string? snippet = null;
+            if (value.StartsWith('{'))
+            {
+                using var document = JsonDocument.Parse(value);
+                value = document.RootElement.GetProperty("url").GetString()!;
+                title = document.RootElement.TryGetProperty("title", out var titleNode) ? titleNode.GetString() : null;
+                snippet = document.RootElement.TryGetProperty("snippet", out var snippetNode) ? snippetNode.GetString() : null;
+            }
+            if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) ||
+                !(uri.IdnHost.Equals(query.Target, StringComparison.OrdinalIgnoreCase) || uri.IdnHost.EndsWith('.' + query.Target, StringComparison.OrdinalIgnoreCase)) ||
+                !query.FileTypes.Any(type => uri.AbsolutePath.EndsWith('.' + type, StringComparison.OrdinalIgnoreCase))) continue;
+            yield return new SearchResult(uri.AbsoluteUri, title, snippet, Id, query.Target, DateTimeOffset.UtcNow);
+            if (++emitted >= query.MaxResults) yield break;
         }
     }
 }

@@ -47,6 +47,7 @@ public sealed class WorkspaceContext : IWorkspaceContext
     /// <summary>Creates the fixed directory layout with no symlink traversal.</summary>
     public void EnsureDirectories()
     {
+        RejectSymlinkBoundary(RootPath);
         Directory.CreateDirectory(RootPath);
         Directory.CreateDirectory(ArtifactsPath);
         Directory.CreateDirectory(Path.Combine(ArtifactsPath, "raw"));
@@ -55,6 +56,21 @@ public sealed class WorkspaceContext : IWorkspaceContext
         Directory.CreateDirectory(Path.Combine(RootPath, "cache"));
         Directory.CreateDirectory(LogsPath);
         Directory.CreateDirectory(ReportsPath);
+        if (!OperatingSystem.IsWindows())
+        {
+            var privateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+            foreach (var directory in new[] { RootPath, ArtifactsPath, Path.Combine(RootPath, "cache"), LogsPath, ReportsPath })
+                File.SetUnixFileMode(directory, privateMode);
+        }
+    }
+
+    private static void RejectSymlinkBoundary(string path)
+    {
+        for (var current = new DirectoryInfo(Path.GetFullPath(path)); current is not null; current = current.Parent)
+        {
+            if (!current.Exists) continue;
+            if ((current.Attributes & FileAttributes.ReparsePoint) != 0)
+                throw new UnauthorizedAccessException($"Workspace path crosses a symbolic link or reparse point: {current.FullName}");
+        }
     }
 }
-

@@ -5,6 +5,7 @@ using Morsa.Application.Services;
 using Morsa.Domain.Artifacts;
 using Morsa.Domain.Common;
 using Morsa.Domain.Discovery;
+using Morsa.Infrastructure.Configuration;
 using Morsa.Infrastructure.Networking;
 
 namespace Morsa.Infrastructure.Acquisition;
@@ -14,7 +15,8 @@ public sealed class AcquisitionService(
     IMorsaStore store,
     RotatingHttpClient http,
     IArtifactStorage storage,
-    ScopePolicy scopePolicy)
+    NetworkScopeValidator scopeValidator,
+    MorsaConfiguration configuration)
 {
     public async Task<Artifact> FetchAsync(
         Guid projectId,
@@ -26,12 +28,14 @@ public sealed class AcquisitionService(
         bool allowPrivateNetworks,
         CancellationToken cancellationToken)
     {
-        var scope = await store.ScopeEntries.Where(item => item.ProjectId == projectId).ToListAsync(cancellationToken)
-            .ConfigureAwait(false);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumBytes);
+        if (maximumRedirects is < 0 or > 20) throw new ArgumentOutOfRangeException(nameof(maximumRedirects));
         var current = new Uri(resource.Url, UriKind.Absolute);
         for (var redirect = 0; redirect <= maximumRedirects; redirect++)
         {
-            if (!scopePolicy.IsUriAllowed(current, ActivityMode.Passive, scope, allowPrivateNetworks))
+            var validatedAddresses = await scopeValidator.ResolveAllowedAddressesAsync(
+                projectId, current, ActivityMode.Passive, allowPrivateNetworks, cancellationToken).ConfigureAwait(false);
+            if (validatedAddresses is null)
             {
                 resource.Status = "scope_rejected";
                 resource.LastError = "URL is outside authorized scope or resolves to a blocked address class.";
@@ -39,14 +43,24 @@ public sealed class AcquisitionService(
                 throw new UnauthorizedAccessException(resource.LastError);
             }
 
-            var result = await http.FetchAsync(
+            var result = await http.FetchPinnedAsync(
                 current,
                 proxyPool,
                 new NetworkRequestContext(runId, null, $"fetch:{resource.Id}", current, "acquisition", resource.ProviderId),
                 maximumBytes,
+                validatedAddresses,
                 cancellationToken).ConfigureAwait(false);
             if ((int)result.StatusCode is >= 300 and < 400 && TryGetLocation(result, current, out var next))
             {
+                // Preserve transport security across redirects; an HTTPS origin cannot silently downgrade acquisition to HTTP.
+                if (current.Scheme == Uri.UriSchemeHttps && next.Scheme != Uri.UriSchemeHttps)
+                {
+                    resource.Status = "failed";
+                    resource.LastError = "HTTPS redirect downgrade was rejected.";
+                    await store.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                    throw new HttpRequestException(resource.LastError);
+                }
+
                 current = next;
                 continue;
             }
@@ -101,7 +115,15 @@ public sealed class AcquisitionService(
         {
             try
             {
-                await FetchAsync(projectId, runId, resource, proxyPool, maximumBytes, 5, false, cancellationToken)
+                await FetchAsync(
+                        projectId,
+                        runId,
+                        resource,
+                        proxyPool,
+                        maximumBytes,
+                        configuration.Network.MaxRedirects,
+                        configuration.Security.AllowPrivateNetworks,
+                        cancellationToken)
                     .ConfigureAwait(false);
                 downloaded++;
             }
@@ -128,4 +150,3 @@ public sealed class AcquisitionService(
         return Uri.TryCreate(current, values[0], out next!);
     }
 }
-

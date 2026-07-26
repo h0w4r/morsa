@@ -1,0 +1,5 @@
+[Application]
+TcpBrowserAddress=192.0.2.10
+ClientName=seed-client
+InitialProgram=#published-app
+Description=value=with=equals

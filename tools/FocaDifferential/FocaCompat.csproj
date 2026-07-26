@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net461</TargetFramework>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+    <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <NuGetAudit>false</NuGetAudit>
+    <AssemblyName>MetadataExtractCore.Compat</AssemblyName>
+    <FocaRoot Condition="'$(FocaRoot)' == ''">$(MSBuildThisFileDirectory)..\..\.cache\upstream\foca</FocaRoot>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Compile the exact pinned upstream checkout; no FOCA source is copied into this repository. -->
+    <Compile Include="$(FocaRoot)\MetadataExtractCore\**\*.cs"
+             Exclude="$(FocaRoot)\MetadataExtractCore\Properties\AssemblyInfo.cs;$(FocaRoot)\MetadataExtractCore\obj\**\*;$(FocaRoot)\MetadataExtractCore\bin\**\*" />
+    <Reference Include="WindowsBase" />
+    <EmbeddedResource Include="$(FocaRoot)\MetadataExtractCore\resources\*.txt" />
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net461" Version="1.0.3" PrivateAssets="all" />
+    <PackageReference Include="DotNetZip" Version="1.13.7" />
+    <PackageReference Include="MetadataExtractor" Version="2.3.0" />
+    <PackageReference Include="PdfSharp" Version="1.50.5147" />
+  </ItemGroup>
+</Project>

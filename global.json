@@ -3,10 +3,9 @@
     "version": "10.0.302",
     "rollForward": "latestPatch",
     "paths": [
-      ".dotnet",
-      "$host$"
+      "$host$",
+      ".dotnet"
     ],
     "errorMessage": "Morsa requires .NET SDK 10.0.302. Run scripts/install-dotnet.ps1 or scripts/install-dotnet.sh."
   }
 }
-

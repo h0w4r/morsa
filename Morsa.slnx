@@ -9,6 +9,13 @@
     <Project Path="src/Morsa.PluginHost/Morsa.PluginHost.csproj" />
     <Project Path="src/Morsa.PluginSdk/Morsa.PluginSdk.csproj" />
   </Folder>
+  <Folder Name="/examples/">
+    <Project Path="examples/Morsa.CommercialPluginCommon/Morsa.CommercialPluginCommon.csproj" />
+    <Project Path="examples/Morsa.CommercialPlugins.Tests/Morsa.CommercialPlugins.Tests.csproj" />
+    <Project Path="examples/Morsa.ExamplePlugin/Morsa.ExamplePlugin.csproj" />
+    <Project Path="examples/Morsa.ShodanPlugin/Morsa.ShodanPlugin.csproj" />
+    <Project Path="examples/Morsa.VirusTotalPlugin/Morsa.VirusTotalPlugin.csproj" />
+  </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Morsa.IntegrationTests/Morsa.IntegrationTests.csproj" />
     <Project Path="tests/Morsa.UnitTests/Morsa.UnitTests.csproj" />

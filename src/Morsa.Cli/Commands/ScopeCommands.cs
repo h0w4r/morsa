@@ -35,7 +35,7 @@ public sealed class ScopeAddCommand(
             throw new InvalidOperationException("Mode must be passive, active or aggressive.");
         }
 
-        var value = settings.Value.Trim().TrimEnd('.').ToLowerInvariant();
+        var value = CommandHelpers.NormalizeScopeValue(settings.Value, kind);
         var entry = await store.ScopeEntries.SingleOrDefaultAsync(
             item => item.ProjectId == project.Id && item.Kind == kind && item.Value == value,
             cancellationToken).ConfigureAwait(false);

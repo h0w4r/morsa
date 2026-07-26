@@ -81,6 +81,8 @@ public sealed class ProxyProfileConfiguration
 /// <summary>Loads TOML with deterministic snake_case mapping and bounded depth.</summary>
 public static class MorsaConfigurationLoader
 {
+    private const int MaximumConfigurationBytes = 1024 * 1024;
+
     private static readonly TomlSerializerOptions SerializerOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
@@ -97,9 +99,29 @@ public static class MorsaConfigurationLoader
             return new MorsaConfiguration();
         }
 
+        var info = new FileInfo(configurationPath);
+        if (info.Length > MaximumConfigurationBytes)
+            throw new InvalidDataException($"Morsa configuration exceeds {MaximumConfigurationBytes} bytes.");
         var toml = await File.ReadAllTextAsync(configurationPath, cancellationToken).ConfigureAwait(false);
-        return TomlSerializer.Deserialize<MorsaConfiguration>(toml, SerializerOptions) ??
-               new MorsaConfiguration();
+        return Validate(TomlSerializer.Deserialize<MorsaConfiguration>(toml, SerializerOptions) ??
+                        new MorsaConfiguration());
+    }
+
+    /// <summary>Loads a project configuration when present, otherwise the XDG user configuration.</summary>
+    public static MorsaConfiguration LoadForWorkspace(string workspacePath)
+    {
+        var projectPath = Path.Combine(Path.GetFullPath(workspacePath), "morsa.toml");
+        var configurationHome = Environment.GetEnvironmentVariable("XDG_CONFIG_HOME");
+        if (string.IsNullOrWhiteSpace(configurationHome))
+        {
+            configurationHome = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                ".config");
+        }
+
+        var globalPath = Path.Combine(configurationHome, "morsa", "config.toml");
+        var selected = File.Exists(projectPath) ? projectPath : globalPath;
+        return LoadAsync(selected).GetAwaiter().GetResult();
     }
 
     public static Task SaveAsync(
@@ -110,5 +132,34 @@ public static class MorsaConfigurationLoader
         var toml = TomlSerializer.Serialize(configuration, SerializerOptions);
         return File.WriteAllTextAsync(configurationPath, toml, cancellationToken);
     }
-}
 
+    private static MorsaConfiguration Validate(MorsaConfiguration configuration)
+    {
+        if (configuration.Network.Concurrency is < 1 or > 1024)
+            throw new InvalidDataException("network.concurrency must be between 1 and 1024.");
+        if (configuration.Network.RequestsPerSecond is < 0.1 or > 1000)
+            throw new InvalidDataException("network.requests_per_second must be between 0.1 and 1000.");
+        if (configuration.Network.TimeoutSeconds is < 1 or > 3600 || configuration.Network.MaxRedirects is < 0 or > 20)
+            throw new InvalidDataException("Network timeout or redirect budget is outside its safety bounds.");
+        if (configuration.Network.QueryBudget is < 1 or > 1_000_000)
+            throw new InvalidDataException("network.query_budget must be between 1 and 1000000.");
+        if (configuration.Artifacts.MaxDownloadMb is < 1 or > 2_047 || configuration.Artifacts.MaxUncompressedMb is < 1 or > 102_400)
+            throw new InvalidDataException("Artifact byte budgets are outside their safety bounds.");
+        if (configuration.Artifacts.Sandbox is not ("auto" or "strict" or "off"))
+            throw new InvalidDataException("artifacts.sandbox must be auto, strict or off.");
+        if (configuration.Project.DefaultMode is not ("passive" or "active" or "aggressive"))
+            throw new InvalidDataException("project.default_mode must be passive, active or aggressive.");
+        if (configuration.Output.Format is not ("table" or "json" or "ndjson"))
+            throw new InvalidDataException("output.format must be table, json or ndjson.");
+        foreach (var (name, profile) in configuration.ProxyProfiles)
+        {
+            if (string.IsNullOrWhiteSpace(name) || profile.MaxRotations is < 0 or > 1000 ||
+                profile.MaxAttempts is < 1 or > 10_000 || profile.CooldownSeconds is < 0 or > 86_400 ||
+                profile.LeaseTtlSeconds is < 1 or > 604_800 ||
+                !Enum.TryParse<Morsa.Domain.Networking.ProxySelectionPolicy>(profile.Policy.Replace("-", string.Empty), true, out _))
+                throw new InvalidDataException($"Proxy profile '{name}' contains an invalid budget.");
+        }
+
+        return configuration;
+    }
+}

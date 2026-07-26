@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Morsa.Application.Abstractions;
 using Morsa.Domain.Artifacts;
 using Morsa.Domain.Correlation;
@@ -79,6 +80,13 @@ public sealed class MorsaDbContext(DbContextOptions<MorsaDbContext> options)
 
     void IMorsaStore.Remove<TEntity>(TEntity entity) => Remove(entity);
 
+    protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder)
+    {
+        base.ConfigureConventions(configurationBuilder);
+        // SQLite cannot order its native DateTimeOffset text mapping. UTC ticks keep durable chronology queryable.
+        configurationBuilder.Properties<DateTimeOffset>().HaveConversion<UtcDateTimeOffsetConverter>();
+    }
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -100,3 +108,8 @@ public sealed class MorsaDbContext(DbContextOptions<MorsaDbContext> options)
         modelBuilder.Entity<NetworkAttempt>().HasIndex(attempt => attempt.AttemptedAt);
     }
 }
+
+internal sealed class UtcDateTimeOffsetConverter()
+    : ValueConverter<DateTimeOffset, long>(
+        value => value.UtcTicks,
+        value => new DateTimeOffset(value, TimeSpan.Zero));

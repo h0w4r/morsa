@@ -22,6 +22,7 @@
     <ProjectReference Include="..\..\src\Morsa.Domain\Morsa.Domain.csproj" />
     <ProjectReference Include="..\..\src\Morsa.Application\Morsa.Application.csproj" />
     <ProjectReference Include="..\..\src\Morsa.Infrastructure\Morsa.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\Morsa.Cli\Morsa.Cli.csproj" />
   </ItemGroup>
 
 </Project>

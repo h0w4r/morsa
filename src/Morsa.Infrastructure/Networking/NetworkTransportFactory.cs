@@ -51,47 +51,67 @@ public sealed class NetworkTransportFactory(ISecretResolver secrets) : INetworkT
         int port,
         CancellationToken cancellationToken)
     {
+        host = NormalizeAndValidateHost(host);
+        if (port is < 1 or > 65535) throw new ArgumentOutOfRangeException(nameof(port));
         if (endpoint is null)
         {
             var direct = new TcpClient();
-            await direct.ConnectAsync(host, port, cancellationToken).ConfigureAwait(false);
-            return direct.GetStream();
+            try
+            {
+                await direct.ConnectAsync(host, port, cancellationToken).ConfigureAwait(false);
+                return direct.GetStream();
+            }
+            catch
+            {
+                direct.Dispose();
+                throw;
+            }
         }
 
         var proxyUri = new Uri(endpoint.Uri);
+        _ = NormalizeAndValidateHost(proxyUri.IdnHost);
+        if (proxyUri.Port is < 1 or > 65535) throw new InvalidDataException("Proxy endpoint port is invalid.");
         var client = new TcpClient();
-        await client.ConnectAsync(proxyUri.Host, proxyUri.Port, cancellationToken).ConfigureAwait(false);
-        Stream stream = client.GetStream();
-
-        if (endpoint.Protocol == ProxyProtocol.HttpsConnect)
+        try
         {
-            var ssl = new SslStream(stream, leaveInnerStreamOpen: false);
-            await ssl.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
+            await client.ConnectAsync(proxyUri.Host, proxyUri.Port, cancellationToken).ConfigureAwait(false);
+            Stream stream = client.GetStream();
+
+            if (endpoint.Protocol == ProxyProtocol.HttpsConnect)
             {
-                TargetHost = proxyUri.Host,
-                EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
-            }, cancellationToken).ConfigureAwait(false);
-            stream = ssl;
-        }
+                var ssl = new SslStream(stream, leaveInnerStreamOpen: false);
+                await ssl.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
+                {
+                    TargetHost = proxyUri.Host,
+                    EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
+                }, cancellationToken).ConfigureAwait(false);
+                stream = ssl;
+            }
 
-        switch (endpoint.Protocol)
+            switch (endpoint.Protocol)
+            {
+                case ProxyProtocol.Http:
+                case ProxyProtocol.HttpsConnect:
+                    await NegotiateHttpConnectAsync(stream, endpoint, host, port, cancellationToken).ConfigureAwait(false);
+                    break;
+                case ProxyProtocol.Socks4:
+                    await NegotiateSocks4Async(stream, endpoint, host, port, cancellationToken).ConfigureAwait(false);
+                    break;
+                case ProxyProtocol.Socks5:
+                case ProxyProtocol.Socks5Host:
+                    await NegotiateSocks5Async(stream, endpoint, host, port, cancellationToken).ConfigureAwait(false);
+                    break;
+                default:
+                    throw new NotSupportedException($"Unsupported proxy protocol: {endpoint.Protocol}.");
+            }
+
+            return stream;
+        }
+        catch
         {
-            case ProxyProtocol.Http:
-            case ProxyProtocol.HttpsConnect:
-                await NegotiateHttpConnectAsync(stream, endpoint, host, port, cancellationToken).ConfigureAwait(false);
-                break;
-            case ProxyProtocol.Socks4:
-                await NegotiateSocks4Async(stream, endpoint, host, port, cancellationToken).ConfigureAwait(false);
-                break;
-            case ProxyProtocol.Socks5:
-            case ProxyProtocol.Socks5Host:
-                await NegotiateSocks5Async(stream, endpoint, host, port, cancellationToken).ConfigureAwait(false);
-                break;
-            default:
-                throw new NotSupportedException($"Unsupported proxy protocol: {endpoint.Protocol}.");
+            client.Dispose();
+            throw;
         }
-
-        return stream;
     }
 
     private async Task NegotiateHttpConnectAsync(
@@ -131,9 +151,19 @@ public sealed class NetworkTransportFactory(ISecretResolver secrets) : INetworkT
     {
         var credential = secrets.ResolveNetworkCredential(endpoint.SecretRef);
         var user = Encoding.UTF8.GetBytes(credential?.UserName ?? string.Empty);
+        if (user.Length > 255) throw new InvalidOperationException("SOCKS4 user id exceeds 255 bytes.");
         var parsedAddress = IPAddress.TryParse(host, out var address);
-        var remoteDns = endpoint.DnsMode == ProxyDnsMode.Remote || !parsedAddress;
+        var remoteDns = endpoint.DnsMode == ProxyDnsMode.Remote;
+        if (!remoteDns && !parsedAddress)
+        {
+            // SOCKS4 local-DNS mode is pinned to the address resolved here; SOCKS4a is only used explicitly.
+            address = (await Dns.GetHostAddressesAsync(host, cancellationToken).ConfigureAwait(false))
+                .FirstOrDefault(candidate => candidate.AddressFamily == AddressFamily.InterNetwork) ??
+                throw new IOException("SOCKS4 local DNS did not return an IPv4 address.");
+            parsedAddress = true;
+        }
         var hostBytes = remoteDns ? Encoding.ASCII.GetBytes(host) : [];
+        if (hostBytes.Length > 255) throw new ArgumentException("SOCKS4a hostname exceeds 255 bytes.", nameof(host));
         var request = new byte[9 + user.Length + (remoteDns ? hostBytes.Length + 1 : 0)];
         request[0] = 0x04;
         request[1] = 0x01;
@@ -167,7 +197,7 @@ public sealed class NetworkTransportFactory(ISecretResolver secrets) : INetworkT
         await stream.WriteAsync(greeting, cancellationToken).ConfigureAwait(false);
         var choice = new byte[2];
         await stream.ReadExactlyAsync(choice, cancellationToken).ConfigureAwait(false);
-        if (choice[0] != 5 || choice[1] == 0xff)
+        if (choice[0] != 5 || choice[1] is not (0 or 2))
         {
             throw new IOException("SOCKS5 proxy did not accept an authentication method.");
         }
@@ -204,8 +234,12 @@ public sealed class NetworkTransportFactory(ISecretResolver secrets) : INetworkT
         var remoteDns = endpoint.DnsMode == ProxyDnsMode.Remote || endpoint.Protocol == ProxyProtocol.Socks5Host;
         byte addressType;
         byte[] addressBytes;
-        if (!remoteDns && IPAddress.TryParse(host, out var parsed))
+        if (!remoteDns)
         {
+            var parsed = IPAddress.TryParse(host, out var literal)
+                ? literal
+                : (await Dns.GetHostAddressesAsync(host, cancellationToken).ConfigureAwait(false)).FirstOrDefault() ??
+                  throw new IOException("SOCKS5 local DNS returned no address.");
             addressBytes = parsed.GetAddressBytes();
             addressType = parsed.AddressFamily == AddressFamily.InterNetwork ? (byte)1 : (byte)4;
         }
@@ -266,6 +300,15 @@ public sealed class NetworkTransportFactory(ISecretResolver secrets) : INetworkT
             _ => throw new NotSupportedException(),
         };
         return new UriBuilder(original) { Scheme = scheme }.Uri;
+    }
+
+    private static string NormalizeAndValidateHost(string host)
+    {
+        host = host.Trim();
+        if (host.Length >= 2 && host[0] == '[' && host[^1] == ']') host = host[1..^1];
+        if (host.Length is 0 or > 255 || host.Any(character => char.IsControl(character) || char.IsWhiteSpace(character)))
+            throw new ArgumentException("Destination host is empty, oversized or contains forbidden characters.", nameof(host));
+        return host;
     }
 
     private static async Task<int> ReadDomainLengthAsync(Stream stream, CancellationToken cancellationToken)

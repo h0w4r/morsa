@@ -10,7 +10,7 @@ using Spectre.Console.Cli;
 
 namespace Morsa.Cli.Commands;
 
-public sealed class DiscoverDocumentsSettings : WorkspaceSettings
+public sealed class DiscoverDocumentsSettings : ProxyAwareSettings
 {
     [CommandArgument(0, "<TARGET>")]
     public required string Target { get; init; }
@@ -20,9 +20,6 @@ public sealed class DiscoverDocumentsSettings : WorkspaceSettings
 
     [CommandOption("--provider <PROVIDERS>")]
     public string Providers { get; init; } = "searxng,duckduckgo,commoncrawl";
-
-    [CommandOption("--proxy-pool <POOL>")]
-    public string? ProxyPool { get; init; }
 
     [CommandOption("--max-results <COUNT>")]
     public int MaxResults { get; init; } = 100;
@@ -46,6 +43,7 @@ public sealed class DiscoverDocumentsCommand(
         CancellationToken cancellationToken)
     {
         var project = await CommandHelpers.RequireProjectAsync(initializer, store, workspace, cancellationToken).ConfigureAwait(false);
+        var proxyPool = await ProxyCliHelpers.ResolvePoolAsync(store, settings, cancellationToken).ConfigureAwait(false);
         var run = await runs.StartAsync(project.Id, "discover documents", settings.ActiveCrawl ? ActivityMode.Active : ActivityMode.Passive, cancellationToken)
             .ConfigureAwait(false);
         var providers = settings.Providers.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
@@ -58,7 +56,7 @@ public sealed class DiscoverDocumentsCommand(
             settings.Target.Trim().TrimEnd('.').ToLowerInvariant(),
             settings.Types.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
             MaxResults: Math.Clamp(settings.MaxResults, 1, 5_000));
-        var execution = new SearchExecutionContext(run.Id, null, run.Id.ToString("N"), settings.ProxyPool, query.MaxResults * query.FileTypes.Count);
+        var execution = new SearchExecutionContext(run.Id, null, run.Id.ToString("N"), proxyPool, query.MaxResults * query.FileTypes.Count, project.Id);
         var result = await discovery.DiscoverAsync(project.Id, run.Id, query, execution, providers, cancellationToken)
             .ConfigureAwait(false);
         var status = result.FailedProviders.Count == 0 ? ExecutionStatus.Completed : ExecutionStatus.PartiallyFailed;
@@ -81,13 +79,14 @@ public sealed class DiscoverHistoryCommand(
     protected override async Task<int> ExecuteAsync(CommandContext context, DiscoverDocumentsSettings settings, CancellationToken cancellationToken)
     {
         var project = await CommandHelpers.RequireProjectAsync(initializer, store, workspace, cancellationToken).ConfigureAwait(false);
+        var proxyPool = await ProxyCliHelpers.ResolvePoolAsync(store, settings, cancellationToken).ConfigureAwait(false);
         var run = await runs.StartAsync(project.Id, "discover history", ActivityMode.Passive, cancellationToken).ConfigureAwait(false);
         var query = new SearchQuery(settings.Target, settings.Types.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries), MaxResults: settings.MaxResults);
         var result = await discovery.DiscoverAsync(
             project.Id,
             run.Id,
             query,
-            new SearchExecutionContext(run.Id, null, run.Id.ToString("N"), settings.ProxyPool, settings.MaxResults),
+            new SearchExecutionContext(run.Id, null, run.Id.ToString("N"), proxyPool, settings.MaxResults, project.Id),
             ["commoncrawl"],
             cancellationToken).ConfigureAwait(false);
         var coverage = result.FailedProviders.Count == 0 ? "complete" : "partial_provider_failure";
@@ -98,11 +97,8 @@ public sealed class DiscoverHistoryCommand(
     }
 }
 
-public class FetchPendingSettings : WorkspaceSettings
+public class FetchPendingSettings : ProxyAwareSettings
 {
-    [CommandOption("--proxy-pool <POOL>")]
-    public string? ProxyPool { get; init; }
-
     [CommandOption("--max-mb <MB>")]
     public int MaxMb { get; init; } = 100;
 }
@@ -119,8 +115,9 @@ public sealed class FetchPendingCommand(
     protected override async Task<int> ExecuteAsync(CommandContext context, FetchPendingSettings settings, CancellationToken cancellationToken)
     {
         var project = await CommandHelpers.RequireProjectAsync(initializer, store, workspace, cancellationToken).ConfigureAwait(false);
+        var proxyPool = await ProxyCliHelpers.ResolvePoolAsync(store, settings, cancellationToken).ConfigureAwait(false);
         var run = await runs.StartAsync(project.Id, "fetch pending", ActivityMode.Passive, cancellationToken).ConfigureAwait(false);
-        var result = await acquisition.FetchPendingAsync(project.Id, run.Id, settings.ProxyPool, settings.MaxMb * 1024 * 1024, cancellationToken)
+        var result = await acquisition.FetchPendingAsync(project.Id, run.Id, proxyPool, CommandHelpers.ToIntByteBudget(settings.MaxMb), cancellationToken)
             .ConfigureAwait(false);
         var coverage = result.Failed == 0 ? "complete" : "partial_provider_failure";
         await runs.CompleteAsync(run, result.Failed == 0 ? ExecutionStatus.Completed : ExecutionStatus.PartiallyFailed, coverage, cancellationToken)
@@ -148,6 +145,7 @@ public sealed class IngestUrlCommand(
     protected override async Task<int> ExecuteAsync(CommandContext context, IngestUrlSettings settings, CancellationToken cancellationToken)
     {
         var project = await CommandHelpers.RequireProjectAsync(initializer, store, workspace, cancellationToken).ConfigureAwait(false);
+        var proxyPool = await ProxyCliHelpers.ResolvePoolAsync(store, settings, cancellationToken).ConfigureAwait(false);
         var run = await runs.StartAsync(project.Id, "ingest url", ActivityMode.Passive, cancellationToken).ConfigureAwait(false);
         var resource = new DiscoveredResource
         {
@@ -163,7 +161,7 @@ public sealed class IngestUrlCommand(
         resource = existing ?? resource;
         if (existing is null) store.Add(resource);
         await store.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-        var artifact = await acquisition.FetchAsync(project.Id, run.Id, resource, settings.ProxyPool, settings.MaxMb * 1024 * 1024, 5, false, cancellationToken)
+        var artifact = await acquisition.FetchAsync(project.Id, run.Id, resource, proxyPool, CommandHelpers.ToIntByteBudget(settings.MaxMb), 5, false, cancellationToken)
             .ConfigureAwait(false);
         await runs.CompleteAsync(run, ExecutionStatus.Completed, "complete", cancellationToken).ConfigureAwait(false);
         output.Write(artifact, settings.Json, run.Id.ToString(), "complete");
@@ -184,6 +182,34 @@ public sealed class ProviderListCommand(IEnumerable<ISearchProvider> providers, 
         }
 
         output.Write(results, settings.Json);
+        return 0;
+    }
+}
+
+public sealed class DiscoveryImportSettings : WorkspaceSettings
+{
+    [CommandArgument(0, "<SOURCE>")]
+    public required string Source { get; init; }
+
+    [CommandOption("--format <FORMAT>")]
+    public string? Format { get; init; }
+
+    [CommandOption("--max-results <COUNT>")]
+    public int MaxResults { get; init; } = 100_000;
+}
+
+/// <summary>Imports URL collections from text, CSV, JSON, NDJSON, HAR or stdin.</summary>
+public sealed class DiscoveryImportCommand(
+    IStoreInitializer initializer, IMorsaStore store, IWorkspaceContext workspace, RunCoordinator runs,
+    DiscoveryImportService importer, CliOutput output) : AsyncCommand<DiscoveryImportSettings>
+{
+    protected override async Task<int> ExecuteAsync(CommandContext context, DiscoveryImportSettings settings, CancellationToken cancellationToken)
+    {
+        var project = await CommandHelpers.RequireProjectAsync(initializer, store, workspace, cancellationToken).ConfigureAwait(false);
+        var run = await runs.StartAsync(project.Id, "discover import", ActivityMode.Passive, cancellationToken).ConfigureAwait(false);
+        var imported = await importer.ImportAsync(project.Id, run.Id, settings.Source, settings.Format, settings.MaxResults, cancellationToken).ConfigureAwait(false);
+        await runs.CompleteAsync(run, ExecutionStatus.Completed, "complete", cancellationToken).ConfigureAwait(false);
+        output.Write(new { imported, source = settings.Source, format = settings.Format ?? "auto" }, settings.Json, run.Id.ToString(), "complete");
         return 0;
     }
 }

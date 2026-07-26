@@ -11,7 +11,7 @@ using Morsa.Infrastructure.Networking;
 namespace Morsa.Infrastructure.Recon;
 
 /// <summary>Performs bounded DNS queries using a maintained cross-platform client.</summary>
-public sealed class DnsReconService(IMorsaStore store)
+public sealed class DnsReconService(IMorsaStore store, SocksDnsClient socksDns)
 {
     private static readonly QueryType[] DefaultTypes =
         [QueryType.A, QueryType.AAAA, QueryType.MX, QueryType.NS, QueryType.SOA, QueryType.TXT, QueryType.CNAME, QueryType.SRV, QueryType.CAA];
@@ -52,6 +52,25 @@ public sealed class DnsReconService(IMorsaStore store)
         return observations;
     }
 
+    /// <summary>Queries every requested type through remote SOCKS DNS and persists the answers.</summary>
+    public async Task<IReadOnlyList<DnsObservation>> QueryViaProxyAsync(
+        Guid runId,
+        string name,
+        IReadOnlyCollection<QueryType>? types,
+        ProxyEndpoint endpoint,
+        string resolver,
+        CancellationToken cancellationToken)
+    {
+        var observations = new List<DnsObservation>();
+        foreach (var type in types ?? DefaultTypes)
+        {
+            observations.AddRange(await socksDns.QueryAsync(runId, name, type, endpoint, resolver, cancellationToken).ConfigureAwait(false));
+        }
+        store.AddRange(observations);
+        await store.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        return observations;
+    }
+
     public async Task<IReadOnlyList<DnsObservation>> ReverseAsync(
         Guid runId,
         IEnumerable<System.Net.IPAddress> addresses,
@@ -81,6 +100,110 @@ public sealed class DnsReconService(IMorsaStore store)
         return observations;
     }
 
+    public async Task<IReadOnlyList<DnsObservation>> ReverseViaProxyAsync(
+        Guid runId,
+        IEnumerable<System.Net.IPAddress> addresses,
+        ProxyEndpoint endpoint,
+        string resolver,
+        CancellationToken cancellationToken)
+    {
+        var observations = new List<DnsObservation>();
+        foreach (var address in addresses)
+        {
+            var reverseName = address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork
+                ? string.Join('.', address.GetAddressBytes().Reverse()) + ".in-addr.arpa"
+                : string.Join('.', address.GetAddressBytes().Reverse().SelectMany(value => new[] { (value & 0x0f).ToString("x"), (value >> 4).ToString("x") })) + ".ip6.arpa";
+            observations.AddRange(await socksDns.QueryAsync(runId, reverseName, QueryType.PTR, endpoint, resolver, cancellationToken).ConfigureAwait(false));
+        }
+        store.AddRange(observations);
+        await store.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        return observations;
+    }
+
+    /// <summary>Resolves a bounded label dictionary and suppresses wildcard DNS answers.</summary>
+    public async Task<IReadOnlyList<DnsObservation>> DiscoverSubdomainsAsync(
+        Guid runId,
+        string domain,
+        IEnumerable<string> labels,
+        int budget,
+        CancellationToken cancellationToken)
+    {
+        var client = new LookupClient(new LookupClientOptions { Timeout = TimeSpan.FromSeconds(3), Retries = 0, UseCache = false });
+        var wildcardName = $"morsa-{Guid.NewGuid():N}.{domain}";
+        var wildcard = await ResolveAddressesAsync(client, wildcardName, cancellationToken).ConfigureAwait(false);
+        var observations = new List<DnsObservation>();
+        foreach (var label in labels.Select(value => value.Trim().ToLowerInvariant()).Where(value => value.Length > 0).Distinct().Take(Math.Clamp(budget, 1, 100_000)))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!System.Text.RegularExpressions.Regex.IsMatch(label, "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")) continue;
+            var name = $"{label}.{domain.TrimEnd('.')}";
+            var addresses = await ResolveAddressesAsync(client, name, cancellationToken).ConfigureAwait(false);
+            if (addresses.Count == 0 || (wildcard.Count > 0 && addresses.SetEquals(wildcard))) continue;
+            observations.AddRange(addresses.Select(address => new DnsObservation
+            {
+                RunId = runId,
+                Name = name,
+                RecordType = address.Contains(':', StringComparison.Ordinal) ? "AAAA" : "A",
+                Value = address,
+                Source = "subdomain-dictionary",
+            }));
+        }
+
+        store.AddRange(observations);
+        await store.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        return observations;
+    }
+
+    /// <summary>Attempts an explicit TCP AXFR against a selected authoritative server.</summary>
+    public async Task<IReadOnlyList<DnsObservation>> ZoneTransferAsync(
+        Guid runId,
+        string zone,
+        string server,
+        CancellationToken cancellationToken)
+    {
+        var addresses = await System.Net.Dns.GetHostAddressesAsync(server.TrimEnd('.'), cancellationToken).ConfigureAwait(false);
+        if (addresses.Length == 0) throw new InvalidOperationException($"Name server '{server}' has no address.");
+        var client = new LookupClient(new LookupClientOptions
+        {
+            UseTcpOnly = true,
+            Timeout = TimeSpan.FromSeconds(15),
+            Retries = 0,
+            UseCache = false,
+        });
+        var response = await client.QueryServerAsync(addresses, zone.TrimEnd('.'), QueryType.AXFR, QueryClass.IN, cancellationToken)
+            .ConfigureAwait(false);
+        var observations = response.AllRecords.Take(100_000).Select(record => new DnsObservation
+        {
+            RunId = runId,
+            Name = record.DomainName.Value.TrimEnd('.'),
+            RecordType = record.RecordType.ToString(),
+            Value = NormalizeRecord(record),
+            Ttl = checked((uint)record.InitialTimeToLive),
+            Source = $"axfr:{server}",
+        }).ToArray();
+        store.AddRange(observations);
+        await store.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        return observations;
+    }
+
+    private static async Task<HashSet<string>> ResolveAddressesAsync(LookupClient client, string name, CancellationToken cancellationToken)
+    {
+        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var type in new[] { QueryType.A, QueryType.AAAA })
+        {
+            try
+            {
+                var response = await client.QueryAsync(name, type, cancellationToken: cancellationToken).ConfigureAwait(false);
+                foreach (var address in response.Answers.OfType<AddressRecord>()) result.Add(address.Address.ToString());
+            }
+            catch (DnsResponseException)
+            {
+                // NXDOMAIN and refused queries are expected during bounded enumeration.
+            }
+        }
+        return result;
+    }
+
     private static string NormalizeRecord(DnsResourceRecord record) => record switch
     {
         AddressRecord address => address.Address.ToString(),
@@ -96,19 +219,25 @@ public sealed class DnsReconService(IMorsaStore store)
 public sealed class FingerprintService(
     IMorsaStore store,
     RotatingHttpClient http,
-    INetworkTransportFactory transports)
+    INetworkTransportFactory transports,
+    NetworkScopeValidator scopeValidator)
 {
     public async Task<ServiceObservation> FingerprintHttpAsync(
+        Guid projectId,
         Guid runId,
         Uri uri,
         string? proxyPool,
         CancellationToken cancellationToken)
     {
-        var result = await http.FetchAsync(
+        var validatedAddresses = await scopeValidator.ResolveAllowedAddressesAsync(
+            projectId, uri, Morsa.Domain.Common.ActivityMode.Active, false, cancellationToken).ConfigureAwait(false) ??
+            throw new UnauthorizedAccessException("HTTP fingerprint target is outside authorized active scope or resolves to a blocked address class.");
+        var result = await http.FetchPinnedAsync(
             uri,
             proxyPool,
             new NetworkRequestContext(runId, null, $"fingerprint:{uri.Host}", uri, "fingerprint-http", null),
             512 * 1024,
+            validatedAddresses,
             cancellationToken).ConfigureAwait(false);
         var technology = DetectTechnology(result.Headers, result.Content);
         var observation = new ServiceObservation
@@ -126,6 +255,7 @@ public sealed class FingerprintService(
     }
 
     public async Task<ServiceObservation> GrabBannerAsync(
+        Guid projectId,
         Guid runId,
         string host,
         int port,
@@ -133,7 +263,15 @@ public sealed class FingerprintService(
         ProxyEndpoint? endpoint,
         CancellationToken cancellationToken)
     {
-        await using var stream = await transports.ConnectTcpAsync(endpoint, host, port, cancellationToken).ConfigureAwait(false);
+        var validatedAddresses = await scopeValidator.ResolveAllowedAddressesAsync(
+            projectId,
+            new UriBuilder("https", host, port).Uri,
+            Morsa.Domain.Common.ActivityMode.Active,
+            false,
+            cancellationToken).ConfigureAwait(false) ??
+            throw new UnauthorizedAccessException("Banner target is outside authorized active scope or resolves to a blocked address class.");
+        var transportHost = endpoint?.DnsMode == ProxyDnsMode.Remote ? host : validatedAddresses[0].ToString();
+        await using var stream = await transports.ConnectTcpAsync(endpoint, transportHost, port, cancellationToken).ConfigureAwait(false);
         if (protocol.Equals("smtp", StringComparison.OrdinalIgnoreCase))
         {
             await stream.WriteAsync(Encoding.ASCII.GetBytes($"EHLO morsa.local\r\n"), cancellationToken).ConfigureAwait(false);
@@ -157,13 +295,22 @@ public sealed class FingerprintService(
     }
 
     public async Task<ServiceObservation> InspectTlsAsync(
+        Guid projectId,
         Guid runId,
         string host,
         int port,
         ProxyEndpoint? endpoint,
         CancellationToken cancellationToken)
     {
-        await using var transport = await transports.ConnectTcpAsync(endpoint, host, port, cancellationToken).ConfigureAwait(false);
+        var validatedAddresses = await scopeValidator.ResolveAllowedAddressesAsync(
+            projectId,
+            new UriBuilder("https", host, port).Uri,
+            Morsa.Domain.Common.ActivityMode.Active,
+            false,
+            cancellationToken).ConfigureAwait(false) ??
+            throw new UnauthorizedAccessException("TLS target is outside authorized active scope or resolves to a blocked address class.");
+        var transportHost = endpoint?.DnsMode == ProxyDnsMode.Remote ? host : validatedAddresses[0].ToString();
+        await using var transport = await transports.ConnectTcpAsync(endpoint, transportHost, port, cancellationToken).ConfigureAwait(false);
         using var tls = new SslStream(transport, leaveInnerStreamOpen: false, (_, _, _, errors) => errors == SslPolicyErrors.None);
         await tls.AuthenticateAsClientAsync(host).WaitAsync(cancellationToken).ConfigureAwait(false);
         var certificate = tls.RemoteCertificate is null ? null : new X509Certificate2(tls.RemoteCertificate);

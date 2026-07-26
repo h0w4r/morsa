@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>Morsa.FuzzHarness</AssemblyName>
+    <RootNamespace>Morsa.FuzzHarness</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Morsa.Application\Morsa.Application.csproj" />
+    <ProjectReference Include="..\..\src\Morsa.Domain\Morsa.Domain.csproj" />
+    <ProjectReference Include="..\..\src\Morsa.Infrastructure\Morsa.Infrastructure.csproj" />
+  </ItemGroup>
+
+</Project>

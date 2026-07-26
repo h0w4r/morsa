@@ -13,7 +13,8 @@ public sealed record SearchExecutionContext(
     Guid? TaskId,
     string SessionKey,
     string? ProxyPool,
-    int QueryBudget);
+    int QueryBudget,
+    Guid? ProjectId = null);
 
 /// <summary>Provider result with source provenance.</summary>
 public sealed record SearchResult(
@@ -39,4 +40,3 @@ public interface ISearchProvider
         SearchExecutionContext context,
         CancellationToken cancellationToken);
 }
-

@@ -1,0 +1,14 @@
+{
+  "id": "morsa.provider.shodan",
+  "name": "Morsa Shodan Provider",
+  "version": "1.0.0",
+  "author": "Morsa contributors",
+  "apiVersion": "1",
+  "kind": "process",
+  "entryPoint": "morsa-shodan-plugin",
+  "arguments": [],
+  "permissions": ["network", "secrets"],
+  "secretEnvironmentVariables": ["SHODAN_API_KEY", "SHODAN_API_BASE_URL"],
+  "sha256": null,
+  "description": "Bounded Shodan host lookup over morsa-plugin/1."
+}

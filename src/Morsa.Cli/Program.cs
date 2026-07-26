@@ -2,7 +2,11 @@ using Microsoft.Extensions.DependencyInjection;
 using Morsa.Cli.Commands;
 using Morsa.Cli.Runtime;
 using Morsa.Infrastructure;
+using Morsa.Infrastructure.Configuration;
 using Morsa.Infrastructure.Workspace;
+using Serilog;
+using Serilog.Events;
+using Serilog.Formatting.Json;
 using Spectre.Console.Cli;
 
 namespace Morsa.Cli;
@@ -14,9 +18,38 @@ public static class Program
     {
         var workspacePath = ArgumentPreParser.GetOption(args, "--project") ??
                             WorkspaceContext.Discover().RootPath;
+        MorsaConfiguration configuration;
+        try
+        {
+            configuration = MorsaConfigurationLoader.LoadForWorkspace(workspacePath);
+        }
+        catch (Exception exception) when (exception is IOException or InvalidDataException or Tomlyn.TomlException)
+        {
+            Console.Error.WriteLine($"morsa: invalid configuration: {exception.Message}");
+            return 2;
+        }
+        if (!configuration.Output.Color) Environment.SetEnvironmentVariable("NO_COLOR", "1");
+        var logRoot = File.Exists(Path.Combine(workspacePath, "morsa.toml"))
+            ? Path.Combine(workspacePath, "logs")
+            : GetGlobalStatePath();
+        Directory.CreateDirectory(logRoot);
+        Log.Logger = new LoggerConfiguration()
+            .MinimumLevel.Information()
+            .Enrich.WithProperty("application", "morsa")
+            .WriteTo.Console(standardErrorFromLevel: LogEventLevel.Verbose)
+            .WriteTo.File(
+                new JsonFormatter(renderMessage: true),
+                Path.Combine(logRoot, "morsa-.jsonl"),
+                rollingInterval: RollingInterval.Day,
+                fileSizeLimitBytes: 10 * 1024 * 1024,
+                retainedFileCountLimit: 10,
+                rollOnFileSizeLimit: true,
+                shared: true)
+            .CreateLogger();
         var services = new ServiceCollection();
-        services.AddMorsaCore(workspacePath);
-        services.AddSingleton<CliOutput>();
+        services.AddMorsaCore(workspacePath, configuration);
+        var cliOutput = new CliOutput(configuration, args.Contains("--ndjson", StringComparer.Ordinal));
+        services.AddSingleton(cliOutput);
         services.AddMorsaCommands();
 
         var registrar = new TypeRegistrar(services);
@@ -49,6 +82,7 @@ public static class Program
             {
                 discover.AddCommand<DiscoverDocumentsCommand>("documents").WithDescription("Discover public documents through configured providers.");
                 discover.AddCommand<DiscoverHistoryCommand>("history").WithDescription("Discover historical URLs through Common Crawl.");
+                discover.AddCommand<DiscoveryImportCommand>("import").WithDescription("Import text, CSV, JSON, NDJSON or HAR results.");
             });
             config.AddBranch("fetch", fetch =>
             {
@@ -73,6 +107,9 @@ public static class Program
             {
                 recon.AddCommand<ReconDnsCommand>("dns").WithDescription("Query DNS records for an authorized target.");
                 recon.AddCommand<ReconReverseCommand>("reverse").WithDescription("Perform reverse DNS lookups.");
+                recon.AddCommand<ReconSubdomainsCommand>("subdomains").WithDescription("Enumerate a bounded DNS label dictionary.");
+                recon.AddCommand<ReconRangeCommand>("range").WithDescription("Perform bounded PTR enumeration for a CIDR.");
+                recon.AddCommand<ReconAxfrCommand>("axfr").WithDescription("Attempt an authorized TCP zone transfer.");
             });
             config.AddBranch("fingerprint", fingerprint =>
             {
@@ -92,6 +129,17 @@ public static class Program
             });
             config.AddBranch("graph", graph =>
                 graph.AddCommand<GraphExportCommand>("export").WithDescription("Export GraphML, GEXF, DOT or CSV."));
+            config.AddBranch("plugin", plugin =>
+            {
+                plugin.AddCommand<PluginListCommand>("list").WithDescription("List installed plugin versions.");
+                plugin.AddCommand<PluginInspectCommand>("inspect").WithDescription("Inspect installed versions and manifest validation.");
+                plugin.AddCommand<PluginInstallCommand>("install").WithDescription("Install a directory or ZIP plugin package.");
+                plugin.AddCommand<PluginInstallCommand>("update").WithDescription("Install and activate a newer plugin package.");
+                plugin.AddCommand<PluginActivateCommand>("activate").WithDescription("Activate one installed plugin version.");
+                plugin.AddCommand<PluginRollbackCommand>("rollback").WithDescription("Activate the previous installed version.");
+                plugin.AddCommand<PluginRemoveCommand>("remove").WithDescription("Remove one version or the complete plugin.");
+                plugin.AddCommand<PluginRunCommand>("run").WithDescription("Invoke a morsa-plugin/1 operation.");
+            });
             config.AddBranch("proxy", proxy =>
             {
                 proxy.AddBranch("pool", pool =>
@@ -100,6 +148,11 @@ public static class Program
                     pool.AddCommand<ProxyPoolListCommand>("list").WithDescription("List proxy pools.");
                 });
                 proxy.AddCommand<ProxyImportCommand>("import").WithDescription("Import user-managed proxy endpoints.");
+                proxy.AddBranch("source", source =>
+                {
+                    source.AddCommand<ProxySourceListCommand>("list").WithDescription("List supported proxy source adapters and environment availability.");
+                    source.AddCommand<ProxyImportCommand>("load").WithDescription("Load a proxy source into a named pool.");
+                });
                 proxy.AddCommand<ProxyStatusCommand>("status").WithDescription("Show endpoint health and counters.");
                 proxy.AddCommand<ProxyResetCommand>("reset").WithDescription("Reset health for a pool.");
                 proxy.AddCommand<ProxyTestCommand>("test").WithDescription("Test pool connectivity against an HTTPS URL.");
@@ -108,6 +161,8 @@ public static class Program
             {
                 report.AddCommand<ReportJsonCommand>("json").WithDescription("Export a versioned JSON report.");
                 report.AddCommand<ReportHtmlCommand>("html").WithDescription("Export a standalone HTML report.");
+                report.AddCommand<ReportCsvCommand>("csv").WithDescription("Export normalized CSV tables.");
+                report.AddCommand<ReportBundleCommand>("bundle").WithDescription("Export a reproducible evidence bundle.");
             });
         });
 
@@ -117,18 +172,47 @@ public static class Program
         }
         catch (OperationCanceledException)
         {
+            Log.Warning("Operation cancelled by caller");
             return 7;
         }
         catch (Exception exception)
         {
-            Console.Error.WriteLine($"morsa: {exception.Message}");
+            // Do not serialize exception messages or stack data into persistent logs because URLs may carry sensitive query values.
+            Log.Error("Unhandled Morsa CLI failure of type {ExceptionType}", exception.GetType().FullName);
+            if (cliOutput.MachineReadable || args.Any(argument => argument is "--json" or "--ndjson"))
+            {
+                cliOutput.WriteError("morsa.unhandled", exception.Message);
+                return exception is Morsa.Application.Models.MorsaException morsaException ? morsaException.ExitCode : 1;
+            }
+            Console.Error.WriteLine($"morsa: {CliOutput.SanitizeDiagnostic(exception.Message)}");
             return 1;
         }
+        finally
+        {
+            await Log.CloseAndFlushAsync().ConfigureAwait(false);
+        }
+    }
+
+    private static string GetGlobalStatePath()
+    {
+        var state = Environment.GetEnvironmentVariable("XDG_STATE_HOME");
+        if (!string.IsNullOrWhiteSpace(state)) return Path.Combine(state, "morsa");
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        return OperatingSystem.IsWindows()
+            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Morsa", "logs")
+            : Path.Combine(home, ".local", "state", "morsa");
     }
 }
 
 internal static class BuildInfo
 {
-    public const string Version = "0.1.0-alpha.1";
+    // Read the SDK-generated informational version so packaged binaries report the requested release version.
+    public static string Version { get; } =
+        typeof(BuildInfo).Assembly
+            .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+            .OfType<System.Reflection.AssemblyInformationalVersionAttribute>()
+            .FirstOrDefault()?.InformationalVersion.Split('+', 2)[0]
+        ?? "0.0.0-unknown";
+
     public const string SchemaVersion = "1";
 }

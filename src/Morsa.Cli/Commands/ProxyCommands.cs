@@ -9,6 +9,83 @@ using Spectre.Console.Cli;
 
 namespace Morsa.Cli.Commands;
 
+/// <summary>Shared network override flags accepted by acquisition and recon commands.</summary>
+public class ProxyAwareSettings : WorkspaceSettings
+{
+    [CommandOption("--proxy <URI>")]
+    public string? Proxy { get; init; }
+
+    [CommandOption("--proxy-pool <POOL>")]
+    public string? ProxyPool { get; init; }
+
+    [CommandOption("--proxy-policy <POLICY>")]
+    public string? ProxyPolicy { get; init; }
+
+    [CommandOption("--max-proxy-rotations <COUNT>")]
+    public int? MaxProxyRotations { get; init; }
+
+    [CommandOption("--no-direct-fallback")]
+    public bool NoDirectFallback { get; init; }
+}
+
+internal static class ProxyCliHelpers
+{
+    /// <summary>Resolves inline endpoints into the same persistent lease/health runtime as named pools.</summary>
+    public static async Task<string?> ResolvePoolAsync(IMorsaStore store, ProxyAwareSettings settings, CancellationToken cancellationToken)
+    {
+        if (settings.Proxy is not null && settings.ProxyPool is not null)
+        {
+            throw new InvalidOperationException("Use either --proxy or --proxy-pool, not both.");
+        }
+
+        ProxyPool? pool = null;
+        if (settings.Proxy is not null)
+        {
+            var candidate = FileProxySource.Parse(settings.Proxy, null, 1, ["cli"]);
+            var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(candidate.Uri.AbsoluteUri)))[..16].ToLowerInvariant();
+            var name = $"__inline_{hash}";
+            pool = await store.ProxyPools.SingleOrDefaultAsync(item => item.Name == name, cancellationToken).ConfigureAwait(false);
+            if (pool is null)
+            {
+                pool = new ProxyPool { Name = name, MaxRotations = 1, MaxAttempts = 1, AllowDirectFallback = false };
+                store.Add(pool);
+                await store.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                store.Add(new ProxyEndpoint
+                {
+                    PoolId = pool.Id,
+                    Uri = candidate.Uri.AbsoluteUri,
+                    Protocol = candidate.Protocol,
+                    DnsMode = candidate.DnsMode,
+                    TagsJson = "[\"cli\"]",
+                });
+            }
+        }
+        else if (settings.ProxyPool is not null)
+        {
+            pool = await store.ProxyPools.SingleOrDefaultAsync(item => item.Name == settings.ProxyPool, cancellationToken).ConfigureAwait(false) ??
+                   throw new InvalidOperationException($"Proxy pool '{settings.ProxyPool}' does not exist.");
+        }
+
+        if (pool is null) return null;
+        if (settings.ProxyPolicy is not null)
+        {
+            if (!Enum.TryParse<ProxySelectionPolicy>(settings.ProxyPolicy.Replace("-", string.Empty), true, out var policy))
+            {
+                throw new InvalidOperationException($"Unknown proxy policy '{settings.ProxyPolicy}'.");
+            }
+            pool.SelectionPolicy = policy;
+        }
+        if (settings.MaxProxyRotations is { } rotations)
+        {
+            pool.MaxRotations = Math.Clamp(rotations, 0, 10_000);
+            pool.MaxAttempts = Math.Max(pool.MaxAttempts, pool.MaxRotations + 1);
+        }
+        if (settings.NoDirectFallback) pool.AllowDirectFallback = false;
+        await store.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        return pool.Name;
+    }
+}
+
 public sealed class ProxyPoolAddSettings : WorkspaceSettings
 {
     [CommandArgument(0, "<NAME>")]
@@ -87,8 +164,8 @@ public sealed class ProxyPoolListCommand(
 
 public sealed class ProxyImportSettings : WorkspaceSettings
 {
-    [CommandArgument(0, "<FILE>")]
-    public required string File { get; init; }
+    [CommandArgument(0, "<SOURCE>")]
+    public required string Source { get; init; }
 
     [CommandOption("--pool <NAME>")]
     public string Pool { get; init; } = "default";
@@ -99,6 +176,7 @@ public sealed class ProxyImportCommand(
     IStoreInitializer initializer,
     IMorsaStore store,
     IWorkspaceContext workspace,
+    CompositeProxySource sources,
     CliOutput output) : AsyncCommand<ProxyImportSettings>
 {
     protected override async Task<int> ExecuteAsync(CommandContext context, ProxyImportSettings settings, CancellationToken cancellationToken)
@@ -113,11 +191,10 @@ public sealed class ProxyImportCommand(
             await store.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         }
 
-        var source = new FileProxySource(Path.GetFullPath(settings.File));
         var existing = await store.ProxyEndpoints.Where(item => item.PoolId == pool.Id).Select(item => item.Uri)
             .ToHashSetAsync(StringComparer.OrdinalIgnoreCase, cancellationToken).ConfigureAwait(false);
         var added = 0;
-        await foreach (var candidate in source.LoadAsync(cancellationToken).ConfigureAwait(false))
+        await foreach (var candidate in sources.LoadAsync(settings.Source, cancellationToken).ConfigureAwait(false))
         {
             if (!existing.Add(candidate.Uri.ToString()))
             {
@@ -138,8 +215,34 @@ public sealed class ProxyImportCommand(
         }
 
         await store.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-        output.Write(new { pool = pool.Name, imported = added, source = source.Id }, settings.Json);
+        output.Write(new { pool = pool.Name, imported = added, source = settings.Source }, settings.Json);
         return 0;
+    }
+}
+
+/// <summary>Describes supported source adapters without reading or exposing proxy credentials.</summary>
+public sealed class ProxySourceListCommand(CliOutput output) : AsyncCommand<WorkspaceSettings>
+{
+    protected override Task<int> ExecuteAsync(CommandContext context, WorkspaceSettings settings, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var environmentVariables = new[] { "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY" };
+        output.Write(new
+        {
+            adapters = new[]
+            {
+                new { id = "environment", syntax = "env", formats = new[] { "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY" } },
+                new { id = "file", syntax = "PATH", formats = new[] { "text", "csv", "json", "ndjson" } },
+                new { id = "stdin", syntax = "-", formats = new[] { "text", "jsonl" } },
+                new { id = "https", syntax = "https://HOST/PATH", formats = new[] { "text", "csv", "json", "ndjson" } },
+                new { id = "command", syntax = "command:EXECUTABLE [ARGUMENTS]", formats = new[] { "jsonl" } },
+                new { id = "inline", syntax = "PROXY_URI", formats = new[] { "http", "https-connect", "socks4", "socks5", "socks5h" } },
+            },
+            environment = environmentVariables.ToDictionary(
+                name => name.ToLowerInvariant(),
+                name => !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(name))),
+        }, settings.Json);
+        return Task.FromResult(0);
     }
 }
 
@@ -196,6 +299,12 @@ public sealed class ProxyResetCommand(
             ? (Guid?)null
             : await store.ProxyPools.Where(item => item.Name == settings.Pool).Select(item => (Guid?)item.Id)
                 .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+        if (settings.Pool is not null && poolId is null)
+        {
+            // A typo must not broaden a targeted reset into resetting every configured endpoint.
+            throw new InvalidOperationException($"Proxy pool '{settings.Pool}' does not exist.");
+        }
+
         var endpoints = await store.ProxyEndpoints
             .Where(item => poolId == null || item.PoolId == poolId)
             .ToListAsync(cancellationToken).ConfigureAwait(false);
@@ -226,14 +335,23 @@ public sealed class ProxyTestCommand(
     IStoreInitializer initializer,
     IMorsaStore store,
     IWorkspaceContext workspace,
+    NetworkScopeValidator scopeValidator,
     INetworkTransportFactory transports,
     IProxyOutcomeRecorder recorder,
     CliOutput output) : AsyncCommand<ProxyTestSettings>
 {
     protected override async Task<int> ExecuteAsync(CommandContext context, ProxyTestSettings settings, CancellationToken cancellationToken)
     {
-        await CommandHelpers.RequireProjectAsync(initializer, store, workspace, cancellationToken).ConfigureAwait(false);
-        var target = new Uri(settings.Url, UriKind.Absolute);
+        var project = await CommandHelpers.RequireProjectAsync(initializer, store, workspace, cancellationToken).ConfigureAwait(false);
+        if (!Uri.TryCreate(settings.Url, UriKind.Absolute, out var target) || target.Scheme is not ("http" or "https") || !string.IsNullOrEmpty(target.UserInfo))
+        {
+            throw new InvalidDataException("Proxy test URL must be an absolute HTTP or HTTPS URL without user information.");
+        }
+        if (!await scopeValidator.IsAllowedAsync(project.Id, target, Morsa.Domain.Common.ActivityMode.Active, false, cancellationToken).ConfigureAwait(false))
+        {
+            return 3;
+        }
+
         var pool = await store.ProxyPools.SingleAsync(item => item.Name == settings.Pool, cancellationToken).ConfigureAwait(false);
         var endpoints = await store.ProxyEndpoints.Where(item => item.PoolId == pool.Id).ToListAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -294,5 +412,3 @@ public sealed class ProxyTestCommand(
         return results.Count == 0 ? 4 : 0;
     }
 }
-
-

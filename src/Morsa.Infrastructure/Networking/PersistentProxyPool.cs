@@ -26,9 +26,11 @@ public sealed class PersistentProxyPool(
         }
 
         var activeLeases = await store.ProxyLeases
-            .Where(lease => lease.ReleasedAt == null && lease.ExpiresAt > now)
+            .Where(lease => lease.ReleasedAt == null)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
+        // SQLite stores DateTimeOffset as text and cannot translate ordering reliably.
+        activeLeases = activeLeases.Where(lease => lease.ExpiresAt > now).ToList();
 
         var existing = activeLeases.FirstOrDefault(lease => lease.SessionKey == context.SessionKey);
         if (existing is not null && (excludedEndpoints is null || !excludedEndpoints.Contains(existing.ProxyEndpointId)))
@@ -52,6 +54,7 @@ public sealed class PersistentProxyPool(
             .ToDictionary(group => group.Key, group => group.Count());
         var eligible = endpoints
             .Where(endpoint => IsEligible(endpoint, now))
+            .Where(endpoint => IsProtocolCompatible(endpoint, context.RequiredProtocol))
             .Where(endpoint => excludedEndpoints is null || !excludedEndpoints.Contains(endpoint.Id))
             .Where(endpoint => !leaseCounts.TryGetValue(endpoint.Id, out var count) || count < endpoint.MaxConcurrency)
             .ToArray();
@@ -92,5 +95,13 @@ public sealed class PersistentProxyPool(
     private static bool IsEligible(ProxyEndpoint endpoint, DateTimeOffset now) =>
         endpoint.Status is not (ProxyStatus.Disabled or ProxyStatus.Quarantined or ProxyStatus.Unavailable) &&
         (endpoint.CooldownUntil is null || endpoint.CooldownUntil <= now);
-}
 
+    /// <summary>Prevents raw TCP and remote-DNS callers from leasing an incompatible endpoint.</summary>
+    private static bool IsProtocolCompatible(ProxyEndpoint endpoint, ProxyProtocol? required) => required switch
+    {
+        null => true,
+        ProxyProtocol.Socks5 => endpoint.Protocol is ProxyProtocol.Socks5 or ProxyProtocol.Socks5Host,
+        ProxyProtocol.Socks5Host => endpoint.Protocol == ProxyProtocol.Socks5Host && endpoint.DnsMode == ProxyDnsMode.Remote,
+        _ => endpoint.Protocol == required,
+    };
+}

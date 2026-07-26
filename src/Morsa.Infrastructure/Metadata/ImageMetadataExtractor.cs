@@ -24,11 +24,18 @@ public sealed class ImageMetadataExtractor : IArtifactExtractor
 
         try
         {
+            if (new FileInfo(artifact.Path).Length > Math.Min(options.MaxBytes, 100L * 1024 * 1024))
+                return ValueTask.FromResult(new ExtractionResult([], [], [new("image.size_budget", "Image exceeds the parser byte budget.", true)]));
             foreach (var directory in ImageMetadataReader.ReadMetadata(artifact.Path))
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 foreach (var tag in directory.Tags)
                 {
+                    if (observations.Count >= 100_000)
+                    {
+                        diagnostics.Add(new("image.observation_budget", "Image metadata observation budget reached.", true));
+                        return ValueTask.FromResult(new ExtractionResult(observations, [], diagnostics));
+                    }
                     var value = tag.Description;
                     if (string.IsNullOrWhiteSpace(value))
                     {
@@ -83,7 +90,11 @@ public sealed class ImageMetadataExtractor : IArtifactExtractor
             return "author";
         }
 
+        if (tagName.Contains("Host Computer", StringComparison.OrdinalIgnoreCase)) return "hostname";
+        if (tagName.Contains("Operating System", StringComparison.OrdinalIgnoreCase)) return "operating_system";
+        if (tagName.Contains("Model", StringComparison.OrdinalIgnoreCase)) return "device_model";
+        if (tagName.Contains("Copyright", StringComparison.OrdinalIgnoreCase)) return "copyright";
+
         return $"image.{tagName.ToLowerInvariant().Replace(' ', '_')}";
     }
 }
-
