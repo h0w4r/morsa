@@ -44,13 +44,17 @@ allow_direct_fallback = false
 - `network.requests_per_second` limita globalmente al objetivo, no por proxy.
 - query, redirects y timeout acotan discovery, adquisición, parser y pipeline.
 - los presupuestos de artefactos gobiernan ingesta, extracción y reanudación.
-- `artifacts.sandbox=strict` falla cerrado sin Bubblewrap en Linux.
+- `artifacts.sandbox=auto` prefiere Bubblewrap, luego una imagen local disponible
+  mediante Podman/Docker y, si no existe, informa la degradación a subproceso acotado.
+- `artifacts.sandbox=strict` falla cerrado sin Bubblewrap ni frontera OCI local.
+  OCI usa `--pull=never`: analizar un archivo nunca descarga una imagen.
 - JSON/NDJSON solo ocupan stdout; los logs estructurados van a stderr/archivos.
 - NDJSON emite un envelope versionado por elemento de colección.
 - los reportes seudonimizan por defecto; `--include-sensitive` es explícito.
 - los perfiles proxy actualizan la política SQLite sin guardar credenciales.
 
-`MORSA_REQUESTS_PER_SECOND` y `MORSA_SANDBOX` son overrides por proceso. Las variables
+`MORSA_REQUESTS_PER_SECOND`, `MORSA_SANDBOX` y `MORSA_PARSER_OCI_IMAGE` son
+overrides por proceso; la imagen OCI indicada debe existir localmente. Las variables
 proxy estándar y `NO_PROXY` conservan la precedencia documentada.
 
 ## Límites

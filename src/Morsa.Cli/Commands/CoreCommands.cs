@@ -7,6 +7,7 @@ using Morsa.Domain.Common;
 using Morsa.Domain.Projects;
 using Morsa.Infrastructure;
 using Morsa.Infrastructure.Configuration;
+using Morsa.Infrastructure.Metadata;
 using Morsa.Infrastructure.Workspace;
 using Spectre.Console;
 using Spectre.Console.Cli;
@@ -97,6 +98,10 @@ public sealed class DoctorCommand(
         var bwrap = FindOnPath("bwrap");
         var podman = FindOnPath("podman");
         var docker = FindOnPath("docker");
+        // An engine alone is not readiness: parser execution never pulls an OCI image implicitly.
+        var oci = bwrap is null
+            ? ParserSandboxCapabilities.ProbeOci(managedHost: false)
+            : new ParserOciCapability(null, "not-required", false);
         var report = new
         {
             os = RuntimeInformation.OSDescription,
@@ -105,8 +110,17 @@ public sealed class DoctorCommand(
             workspace = workspace.RootPath,
             database,
             database_error = databaseError,
-            sandbox = bwrap is not null ? "bubblewrap" : podman is not null || docker is not null ? "oci" : "process-restricted",
-            tools = new { bubblewrap = bwrap, podman, docker, yara = FindOnPath("yara"), clamav = FindOnPath("clamscan") },
+            sandbox = bwrap is not null ? "bubblewrap" : oci.ImageAvailable ? "oci" : "process-restricted",
+            tools = new
+            {
+                bubblewrap = bwrap,
+                podman,
+                docker,
+                oci_image = oci.Image,
+                oci_image_local = oci.ImageAvailable,
+                yara = FindOnPath("yara"),
+                clamav = FindOnPath("clamscan"),
+            },
         };
         output.Write(report, settings.Json);
         return database ? 0 : 10;

@@ -45,13 +45,17 @@ allow_direct_fallback = false
 - `network.query_budget`, redirect and timeout values bound discovery, acquisition,
   parser and full-pipeline work where applicable.
 - artifact byte budgets govern ingestion, extraction and the resumable full pipeline.
-- `artifacts.sandbox=strict` fails closed unless Bubblewrap is available on Linux.
+- `artifacts.sandbox=auto` prefers Bubblewrap, then a locally cached Podman/Docker
+  image, and otherwise reports degradation to a restricted subprocess.
+- `artifacts.sandbox=strict` fails closed unless Bubblewrap or that local OCI
+  boundary is usable. OCI execution uses `--pull=never`; parsing never pulls an image.
 - JSON/NDJSON configuration affects stdout only; structured logs remain on stderr/files.
 - NDJSON emits one versioned envelope per collection item.
 - reports pseudonymize sensitive values by default; `--include-sensitive` is explicit.
 - proxy profiles upsert pool policy in SQLite but never place credentials there.
 
-`MORSA_REQUESTS_PER_SECOND` and `MORSA_SANDBOX` are explicit process-level overrides.
+`MORSA_REQUESTS_PER_SECOND`, `MORSA_SANDBOX`, and `MORSA_PARSER_OCI_IMAGE` are
+explicit process-level overrides. The OCI image reference must already exist locally.
 Standard proxy variables and `NO_PROXY` keep their documented precedence.
 
 ## Safety bounds

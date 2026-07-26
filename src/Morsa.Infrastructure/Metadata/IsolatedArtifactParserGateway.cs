@@ -5,7 +5,7 @@ using Morsa.Infrastructure.Configuration;
 
 namespace Morsa.Infrastructure.Metadata;
 
-/// <summary>Uses ParserHost with bounded JSONL; auto mode degrades explicitly to an in-process parser.</summary>
+/// <summary>Uses ParserHost with bounded JSONL and Bubblewrap/OCI isolation when locally available.</summary>
 public sealed class IsolatedArtifactParserGateway(
     IArtifactExtractorRegistry registry,
     MorsaConfiguration configuration) : IArtifactParserGateway
@@ -69,12 +69,12 @@ public sealed class IsolatedArtifactParserGateway(
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            TryKill(process);
+            TryKill(process, launch);
             return new ExtractionResult([], [], [new("parser.timeout", $"Parser exceeded {timeout}.", true)]);
         }
         catch
         {
-            TryKill(process);
+            TryKill(process, launch);
             throw;
         }
     }
@@ -134,10 +134,15 @@ public sealed class IsolatedArtifactParserGateway(
     private static ParserLaunch BuildStartInfo((string FileName, string? Assembly) host, string artifactPath, string mode)
     {
         var bubblewrap = mode == "off" ? null : OperatingSystem.IsLinux() ? FindOnPath("bwrap") : null;
-        if (mode == "strict" && bubblewrap is null) throw new InvalidOperationException("Strict parser sandbox requires Bubblewrap on Linux.");
         ProcessStartInfo start;
+        var sandboxKind = "process";
+        var requestArtifactPath = artifactPath;
+        string? ociEngine = null;
+        string? ociContainerName = null;
         if (bubblewrap is not null)
         {
+            sandboxKind = "bubblewrap";
+            requestArtifactPath = "/input/artifact";
             var limiter = FindOnPath("prlimit");
             start = new ProcessStartInfo(limiter ?? bubblewrap) { UseShellExecute = false };
             if (limiter is not null)
@@ -171,28 +176,66 @@ public sealed class IsolatedArtifactParserGateway(
         }
         else
         {
-            start = new ProcessStartInfo(host.FileName) { UseShellExecute = false };
-            if (host.Assembly is not null) start.ArgumentList.Add(host.Assembly);
+            var oci = mode == "off" ? new ParserOciCapability(null, "disabled", false) :
+                ParserSandboxCapabilities.ProbeOci(host.Assembly is not null);
+            if (oci is { Engine: not null, ImageAvailable: true })
+            {
+                sandboxKind = "oci";
+                requestArtifactPath = "/input/artifact";
+                ociEngine = oci.Engine;
+                ociContainerName = $"morsa-parser-{Guid.NewGuid():N}";
+                start = ParserSandboxCapabilities.CreateOciStartInfo(
+                    oci.Engine,
+                    host.FileName,
+                    host.Assembly,
+                    artifactPath,
+                    oci.Image,
+                    ociContainerName);
+            }
+            else
+            {
+                if (mode == "strict")
+                    throw new InvalidOperationException("Strict parser sandbox requires Bubblewrap or a locally cached OCI runtime image on Linux.");
+                start = new ProcessStartInfo(host.FileName) { UseShellExecute = false };
+                if (host.Assembly is not null) start.ArgumentList.Add(host.Assembly);
+            }
         }
 
         start.RedirectStandardInput = true;
         start.RedirectStandardOutput = true;
         start.RedirectStandardError = true;
         start.CreateNoWindow = true;
-        start.WorkingDirectory = bubblewrap is null ? Path.GetDirectoryName(artifactPath)! : "/";
+        start.WorkingDirectory = sandboxKind == "bubblewrap" ? "/" : Path.GetDirectoryName(artifactPath)!;
         start.Environment.Clear();
-        start.Environment["PATH"] = bubblewrap is null
-            ? Environment.GetEnvironmentVariable("PATH") ?? string.Empty
-            : "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
-        start.Environment["HOME"] = bubblewrap is null ? Path.GetTempPath() : "/tmp";
-        start.Environment["TMPDIR"] = bubblewrap is null ? Path.GetTempPath() : "/tmp";
+        start.Environment["PATH"] = sandboxKind == "bubblewrap"
+            ? "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            : Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+        start.Environment["HOME"] = sandboxKind == "bubblewrap"
+            ? "/tmp"
+            : Environment.GetEnvironmentVariable("HOME") ?? Path.GetTempPath();
+        start.Environment["TMPDIR"] = sandboxKind == "bubblewrap" ? "/tmp" : Path.GetTempPath();
         start.Environment["LANG"] = "C.UTF-8";
-        start.Environment["DOTNET_CLI_HOME"] = bubblewrap is null ? Path.GetTempPath() : "/tmp";
+        start.Environment["DOTNET_CLI_HOME"] = sandboxKind == "bubblewrap"
+            ? "/tmp"
+            : Environment.GetEnvironmentVariable("DOTNET_CLI_HOME") ?? Path.GetTempPath();
+        if (sandboxKind == "oci")
+        {
+            // Rootless Podman/Docker may require these host-side control variables; none are forwarded into the container.
+            foreach (var variable in new[] { "XDG_RUNTIME_DIR", "DOCKER_HOST", "DOCKER_CONFIG", "CONTAINER_HOST", "CONTAINERS_CONF", "REGISTRY_AUTH_FILE" })
+            {
+                if (Environment.GetEnvironmentVariable(variable) is { } value) start.Environment[variable] = value;
+            }
+        }
         foreach (var variable in new[] { "DOTNET_ROOT", "DOTNET_ROOT_X64", "DOTNET_ROOT_ARM64" })
         {
             if (Environment.GetEnvironmentVariable(variable) is { } value) start.Environment[variable] = value;
         }
-        return new ParserLaunch(start, bubblewrap is null ? artifactPath : "/input/artifact", bubblewrap is not null);
+        return new ParserLaunch(
+            start,
+            requestArtifactPath,
+            sandboxKind is "bubblewrap" or "oci",
+            ociEngine,
+            ociContainerName);
     }
 
     private static string? FindOnPath(string fileName)
@@ -240,19 +283,65 @@ public sealed class IsolatedArtifactParserGateway(
         return builder.ToString();
     }
 
-    private static void TryKill(Process process)
+    private static void TryKill(Process process, ParserLaunch launch)
     {
         try
         {
             if (!process.HasExited) process.Kill(entireProcessTree: true);
         }
-        catch (InvalidOperationException)
+        catch (Exception exception) when (exception is
+            InvalidOperationException or
+            System.ComponentModel.Win32Exception or
+            NotSupportedException)
         {
             // The process exited between the checks.
+        }
+        finally
+        {
+            TryRemoveOciContainer(launch.OciEngine, launch.OciContainerName);
+        }
+    }
+
+    private static void TryRemoveOciContainer(string? engine, string? containerName)
+    {
+        if (engine is null || containerName is null) return;
+        try
+        {
+            var start = new ProcessStartInfo(engine)
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            };
+            start.ArgumentList.Add("rm");
+            start.ArgumentList.Add("--force");
+            start.ArgumentList.Add(containerName);
+            using var cleanup = Process.Start(start);
+            if (cleanup is null) return;
+            var output = cleanup.StandardOutput.ReadToEndAsync();
+            var error = cleanup.StandardError.ReadToEndAsync();
+            if (!cleanup.WaitForExit(5_000)) cleanup.Kill(entireProcessTree: true);
+            Task.WaitAll([output, error], 5_000);
+        }
+        catch (Exception exception) when (exception is
+            InvalidOperationException or
+            System.ComponentModel.Win32Exception or
+            IOException or
+            UnauthorizedAccessException or
+            AggregateException or
+            NotSupportedException)
+        {
+            // Cleanup is best effort after the primary parser process has already been terminated.
         }
     }
 
     private sealed record ParserRequest(string Id, ArtifactContext Artifact, ExtractionOptions Options);
 
-    private sealed record ParserLaunch(ProcessStartInfo StartInfo, string ArtifactPath, bool IsSandboxed);
+    private sealed record ParserLaunch(
+        ProcessStartInfo StartInfo,
+        string ArtifactPath,
+        bool IsSandboxed,
+        string? OciEngine,
+        string? OciContainerName);
 }

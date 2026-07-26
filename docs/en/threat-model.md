@@ -57,8 +57,9 @@
 ## Plugin and external-tool limitations
 
 Permission declarations are validated and logged but do not replace kernel-level
-isolation. `sandbox=auto` uses the strongest available boundary and reports any
-degradation; `sandbox=strict` refuses execution without the configured isolation.
+isolation. `sandbox=auto` prefers Bubblewrap, then a locally cached pull-free OCI
+boundary, and reports any degradation; `sandbox=strict` refuses execution without
+either isolation. OCI runs networkless, read-only, capability-free and resource-bound.
 Tools such as YARA and ClamAV run locally; reputation uploads must be separate,
 explicit plugin operations.
 

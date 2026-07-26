@@ -26,6 +26,9 @@ plugin malicioso, usuario local, dependencia/build comprometido y error operativ
 - `Proxy-Authorization` no cruza al origen; TLS valida; fallback directo es explícito.
 - SHA-256 identifica contenido; magic/MIME antecede extractor.
 - Parsers no ejecutan macros, scripts, links u objetos.
+- El sandbox `auto` prefiere Bubblewrap y luego una imagen OCI ya presente, ejecutada
+  con `--pull=never`, sin red, filesystem de solo lectura, sin capabilities y con
+  límites de memoria/CPU/PID; `strict` falla cerrado sin una de esas fronteras.
 - Los límites de descompresión/parsing/retry fallan cerrado.
 - Evidencia conserva localizador a la estructura fuente.
 - Un fallo parcial no se convierte en éxito total.
