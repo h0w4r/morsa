@@ -1,9 +1,72 @@
+using Morsa.Application.Abstractions;
+using Morsa.Domain.Common;
+using Morsa.Infrastructure.Configuration;
 using Morsa.Infrastructure.Metadata;
 
 namespace Morsa.UnitTests;
 
+[Collection("ProcessEnvironment")]
 public sealed class ParserSandboxLaunchTests
 {
+    [Fact]
+    public void BubblewrapLaunch_UsesCompatibleLimitsAndManagedHeapCeiling()
+    {
+        var root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "morsa bwrap sandbox"));
+        var launch = IsolatedArtifactParserGateway.BuildStartInfo(
+            (Path.Combine(root, "morsa-parser-host"), null),
+            Path.Combine(root, "artifact.doc"),
+            "auto",
+            "/usr/bin/bwrap",
+            "/usr/bin/prlimit");
+        var arguments = launch.StartInfo.ArgumentList.ToArray();
+
+        Assert.Equal("/usr/bin/prlimit", launch.StartInfo.FileName);
+        Assert.Contains("--cpu=60", arguments);
+        Assert.Contains("--nofile=128", arguments);
+        Assert.DoesNotContain(arguments, argument => argument.StartsWith("--as=", StringComparison.Ordinal));
+        Assert.DoesNotContain(arguments, argument => argument.StartsWith("--nproc=", StringComparison.Ordinal));
+        Assert.Equal("0x30000000", launch.StartInfo.Environment["DOTNET_GCHeapHardLimit"]);
+        Assert.Equal("0", launch.StartInfo.Environment["DOTNET_EnableDiagnostics"]);
+        Assert.True(launch.IsSandboxed);
+        Assert.Equal("/input/artifact", launch.ArtifactPath);
+    }
+
+    [Fact]
+    public async Task ParseAsync_HostExitsBeforeProtocol_ReturnsActionableDiagnostic()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "morsa-invalid-parser-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var invalidHost = Path.Combine(root, "invalid-parser-host.dll");
+        var artifactPath = Path.Combine(root, "artifact.pdf");
+        await File.WriteAllTextAsync(invalidHost, "not a managed assembly");
+        await File.WriteAllTextAsync(artifactPath, "%PDF-1.4\n%%EOF");
+        var previousHost = Environment.GetEnvironmentVariable("MORSA_PARSER_HOST");
+        var previousSandbox = Environment.GetEnvironmentVariable("MORSA_SANDBOX");
+        try
+        {
+            Environment.SetEnvironmentVariable("MORSA_PARSER_HOST", invalidHost);
+            Environment.SetEnvironmentVariable("MORSA_SANDBOX", "off");
+            var gateway = new IsolatedArtifactParserGateway(new ArtifactExtractorRegistry(), new MorsaConfiguration());
+
+            var result = await gateway.ParseAsync(
+                new ArtifactContext(Guid.NewGuid(), artifactPath, new string('0', 64), ArtifactKind.Pdf, "application/pdf"),
+                new ExtractionOptions(Timeout: TimeSpan.FromSeconds(15)),
+                CancellationToken.None);
+
+            var diagnostic = Assert.Single(result.Diagnostics);
+            Assert.Equal("parser.process_failed", diagnostic.Code);
+            Assert.True(diagnostic.IsError);
+            Assert.Contains("exit code", diagnostic.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("Broken pipe", diagnostic.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("MORSA_PARSER_HOST", previousHost);
+            Environment.SetEnvironmentVariable("MORSA_SANDBOX", previousSandbox);
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     [Fact]
     public void OciLaunch_IsPullFreeNetworklessReadOnlyAndResourceBounded()
     {

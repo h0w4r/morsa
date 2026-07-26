@@ -47,11 +47,34 @@ public sealed class IsolatedArtifactParserGateway(
             var request = JsonSerializer.Serialize(new ParserRequest(Guid.NewGuid().ToString("N"), requestArtifact, options), JsonOptions);
             // Drain stderr concurrently so parser diagnostics cannot block the protocol pipe.
             var errorTask = ReadBoundedAsync(process.StandardError, 1024 * 1024, deadline.Token);
-            await process.StandardInput.WriteLineAsync(request.AsMemory(), deadline.Token).ConfigureAwait(false);
-            await process.StandardInput.FlushAsync(deadline.Token).ConfigureAwait(false);
-            process.StandardInput.Close();
-            var line = await ReadBoundedLineAsync(process.StandardOutput, 16 * 1024 * 1024, deadline.Token).ConfigureAwait(false) ??
-                       throw new InvalidDataException("ParserHost returned no response.");
+            try
+            {
+                await process.StandardInput.WriteLineAsync(request.AsMemory(), deadline.Token).ConfigureAwait(false);
+                await process.StandardInput.FlushAsync(deadline.Token).ConfigureAwait(false);
+                process.StandardInput.Close();
+            }
+            catch (IOException exception)
+            {
+                return await CreateProcessFailureAsync(
+                        process,
+                        errorTask,
+                        "exited before accepting the request",
+                        exception,
+                        deadline.Token)
+                    .ConfigureAwait(false);
+            }
+
+            var line = await ReadBoundedLineAsync(process.StandardOutput, 16 * 1024 * 1024, deadline.Token).ConfigureAwait(false);
+            if (line is null)
+            {
+                return await CreateProcessFailureAsync(
+                        process,
+                        errorTask,
+                        "returned no protocol response",
+                        null,
+                        deadline.Token)
+                    .ConfigureAwait(false);
+            }
             await process.WaitForExitAsync(deadline.Token).ConfigureAwait(false);
             var error = await errorTask.ConfigureAwait(false);
             using var document = JsonDocument.Parse(line);
@@ -131,9 +154,16 @@ public sealed class IsolatedArtifactParserGateway(
         return null;
     }
 
-    private static ParserLaunch BuildStartInfo((string FileName, string? Assembly) host, string artifactPath, string mode)
+    internal static ParserLaunch BuildStartInfo(
+        (string FileName, string? Assembly) host,
+        string artifactPath,
+        string mode,
+        string? bubblewrapOverride = null,
+        string? limiterOverride = null)
     {
-        var bubblewrap = mode == "off" ? null : OperatingSystem.IsLinux() ? FindOnPath("bwrap") : null;
+        var bubblewrap = mode == "off"
+            ? null
+            : bubblewrapOverride ?? (OperatingSystem.IsLinux() ? FindOnPath("bwrap") : null);
         ProcessStartInfo start;
         var sandboxKind = "process";
         var requestArtifactPath = artifactPath;
@@ -143,11 +173,13 @@ public sealed class IsolatedArtifactParserGateway(
         {
             sandboxKind = "bubblewrap";
             requestArtifactPath = "/input/artifact";
-            var limiter = FindOnPath("prlimit");
+            var limiter = limiterOverride ?? FindOnPath("prlimit");
             start = new ProcessStartInfo(limiter ?? bubblewrap) { UseShellExecute = false };
             if (limiter is not null)
             {
-                foreach (var argument in new[] { "--as=1073741824", "--cpu=60", "--nproc=64", "--nofile=128", "--", bubblewrap })
+                // RLIMIT_AS prevents CoreCLR from reserving its virtual address space, while RLIMIT_NPROC
+                // counts every process owned by the user rather than tasks inside Bubblewrap's PID namespace.
+                foreach (var argument in new[] { "--cpu=60", "--nofile=128", "--", bubblewrap })
                     start.ArgumentList.Add(argument);
             }
 
@@ -218,6 +250,13 @@ public sealed class IsolatedArtifactParserGateway(
         start.Environment["DOTNET_CLI_HOME"] = sandboxKind == "bubblewrap"
             ? "/tmp"
             : Environment.GetEnvironmentVariable("DOTNET_CLI_HOME") ?? Path.GetTempPath();
+        if (sandboxKind == "bubblewrap")
+        {
+            // Environment values are hexadecimal for .NET GC settings. This bounds managed commit
+            // without blocking the virtual address reservations required by the 64-bit runtime.
+            start.Environment["DOTNET_GCHeapHardLimit"] = "0x30000000";
+            start.Environment["DOTNET_EnableDiagnostics"] = "0";
+        }
         if (sandboxKind == "oci")
         {
             // Rootless Podman/Docker may require these host-side control variables; none are forwarded into the container.
@@ -283,6 +322,27 @@ public sealed class IsolatedArtifactParserGateway(
         return builder.ToString();
     }
 
+    private static async Task<ExtractionResult> CreateProcessFailureAsync(
+        Process process,
+        Task<string> errorTask,
+        string stage,
+        Exception? exception,
+        CancellationToken cancellationToken)
+    {
+        if (!process.HasExited)
+            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+
+        var error = await errorTask.ConfigureAwait(false);
+        var detail = string.IsNullOrWhiteSpace(error) ? exception?.Message : error.Trim();
+        detail = string.IsNullOrWhiteSpace(detail) ? "No stderr was produced." : detail;
+        if (detail.Length > 4_096) detail = detail[..4_096] + " [truncated]";
+        var exitCode = process.HasExited ? process.ExitCode.ToString(System.Globalization.CultureInfo.InvariantCulture) : "unknown";
+        return new ExtractionResult(
+            [],
+            [],
+            [new("parser.process_failed", $"ParserHost {stage} (exit code {exitCode}): {detail}", true)]);
+    }
+
     private static void TryKill(Process process, ParserLaunch launch)
     {
         try
@@ -338,7 +398,7 @@ public sealed class IsolatedArtifactParserGateway(
 
     private sealed record ParserRequest(string Id, ArtifactContext Artifact, ExtractionOptions Options);
 
-    private sealed record ParserLaunch(
+    internal sealed record ParserLaunch(
         ProcessStartInfo StartInfo,
         string ArtifactPath,
         bool IsSandboxed,

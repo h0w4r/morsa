@@ -36,6 +36,8 @@ test -x "${stage}/bin/morsa" || {
 
 # Debian sorts prereleases before the final release when '-' becomes '~'.
 deb_version="${version/-/\~}"
+# Installed-Size is expressed in KiB and prevents apt from reporting a misleading zero-byte footprint.
+installed_size="$(du -sk --apparent-size "${stage}" | awk '{print $1}')"
 package_root="${ROOT}/artifacts/package/deb/${rid}"
 rm -rf "${package_root}"
 mkdir -p "${package_root}/DEBIAN" "${package_root}/usr"
@@ -48,6 +50,7 @@ Version: ${deb_version}
 Section: utils
 Priority: optional
 Architecture: ${deb_arch}
+Installed-Size: ${installed_size}
 Maintainer: Morsa maintainers <security@users.noreply.github.com>
 Depends: ca-certificates, libc6 (>= 2.31), libgcc-s1, libstdc++6, zlib1g, libicu70 | libicu72 | libicu74 | libicu76 | libicu78, libssl3 | libssl3t64
 Homepage: https://github.com/h0w4r/morsa

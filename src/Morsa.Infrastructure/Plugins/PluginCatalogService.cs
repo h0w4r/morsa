@@ -461,7 +461,9 @@ public sealed class PluginProcessRunner(PluginCatalogService catalog, IMorsaStor
         sandbox.Environment.Clear();
         if (limiter is not null)
         {
-            foreach (var argument in new[] { "--as=536870912", "--cpu=300", "--nproc=64", "--nofile=256", "--", bwrap }) sandbox.ArgumentList.Add(argument);
+            // RLIMIT_AS blocks CoreCLR startup and RLIMIT_NPROC applies to all processes owned by
+            // the invoking user. Bubblewrap already supplies the PID namespace boundary.
+            foreach (var argument in new[] { "--cpu=300", "--nofile=256", "--", bwrap }) sandbox.ArgumentList.Add(argument);
         }
 
         foreach (var argument in new[] { "--die-with-parent", "--new-session", "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--cap-drop", "ALL", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--dir", "/plugin", "--ro-bind", plugin.Directory, "/plugin" })
@@ -511,6 +513,9 @@ public sealed class PluginProcessRunner(PluginCatalogService catalog, IMorsaStor
         foreach (var argument in plugin.Manifest.Arguments ?? []) sandbox.ArgumentList.Add(argument);
 
         foreach (var variable in inner.Environment) sandbox.Environment[variable.Key] = variable.Value;
+        // Bound the managed heap without restricting the virtual address reservations used by CoreCLR.
+        sandbox.Environment["DOTNET_GCHeapHardLimit"] = "0x18000000";
+        sandbox.Environment["DOTNET_EnableDiagnostics"] = "0";
         return sandbox;
     }
 
