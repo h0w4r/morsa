@@ -43,10 +43,55 @@ public static class Program
             {
                 ingest.AddCommand<IngestFileCommand>("file").WithDescription("Ingest one local artifact.");
                 ingest.AddCommand<IngestDirectoryCommand>("directory").WithDescription("Ingest files from a directory.");
+                ingest.AddCommand<IngestUrlCommand>("url").WithDescription("Inspect and acquire one authorized URL.");
+            });
+            config.AddBranch("discover", discover =>
+            {
+                discover.AddCommand<DiscoverDocumentsCommand>("documents").WithDescription("Discover public documents through configured providers.");
+                discover.AddCommand<DiscoverHistoryCommand>("history").WithDescription("Discover historical URLs through Common Crawl.");
+            });
+            config.AddBranch("fetch", fetch =>
+            {
+                fetch.AddCommand<FetchPendingCommand>("pending").WithDescription("Download pending discovered resources.");
+                fetch.AddCommand<IngestUrlCommand>("url").WithDescription("Download one authorized URL.");
+            });
+            config.AddBranch("provider", provider =>
+            {
+                provider.AddCommand<ProviderListCommand>("list").WithDescription("List discovery providers and health.");
+                provider.AddCommand<ProviderListCommand>("status").WithDescription("Check discovery provider health.");
+                provider.AddCommand<ProviderBootstrapCommand>("bootstrap").WithDescription("Generate a local provider deployment.");
+            });
+            config.AddBranch("run", run =>
+            {
+                run.AddCommand<FullPipelineCommand>("full").WithDescription("Run discovery, acquisition, analysis and correlation.");
+                run.AddCommand<ResumePipelineCommand>("resume").WithDescription("Resume pending durable work.");
             });
             config.AddBranch("analyze", analyze =>
                 analyze.AddCommand<AnalyzeAllCommand>("all").WithDescription("Analyze every pending artifact."));
             config.AddCommand<CorrelateCommand>("correlate").WithDescription("Build normalized investigation entities.");
+            config.AddBranch("recon", recon =>
+            {
+                recon.AddCommand<ReconDnsCommand>("dns").WithDescription("Query DNS records for an authorized target.");
+                recon.AddCommand<ReconReverseCommand>("reverse").WithDescription("Perform reverse DNS lookups.");
+            });
+            config.AddBranch("fingerprint", fingerprint =>
+            {
+                fingerprint.AddCommand<FingerprintHttpCommand>("http").WithDescription("Fingerprint an authorized HTTP service.");
+                fingerprint.AddCommand<FingerprintTlsCommand>("tls").WithDescription("Inspect an authorized TLS service.");
+                fingerprint.AddCommand<FingerprintBannerCommand>("banner").WithDescription("Collect a bounded service banner.");
+            });
+            config.AddBranch("web", web =>
+            {
+                web.AddCommand<WebCrawlCommand>("crawl").WithDescription("Create a bounded same-host HTTP map.");
+                web.AddCommand<WebBackupCommand>("backups").WithDescription("Validate evidence-driven backup candidates.");
+            });
+            config.AddBranch("malware", malware =>
+            {
+                malware.AddCommand<MalwareScanCommand>("scan").WithDescription("Run local static risk analysis.");
+                malware.AddCommand<YaraScanCommand>("yara").WithDescription("Run an installed YARA engine.");
+            });
+            config.AddBranch("graph", graph =>
+                graph.AddCommand<GraphExportCommand>("export").WithDescription("Export GraphML, GEXF, DOT or CSV."));
             config.AddBranch("proxy", proxy =>
             {
                 proxy.AddBranch("pool", pool =>
@@ -87,4 +132,3 @@ internal static class BuildInfo
     public const string Version = "0.1.0-alpha.1";
     public const string SchemaVersion = "1";
 }
-

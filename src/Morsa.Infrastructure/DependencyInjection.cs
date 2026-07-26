@@ -4,11 +4,18 @@ using Microsoft.Extensions.DependencyInjection;
 using Morsa.Application.Abstractions;
 using Morsa.Application.Services;
 using Morsa.Infrastructure.Artifacts;
+using Morsa.Infrastructure.Acquisition;
+using Morsa.Infrastructure.Discovery;
 using Morsa.Infrastructure.Metadata;
+using Morsa.Infrastructure.Malware;
 using Morsa.Infrastructure.Networking;
 using Morsa.Infrastructure.Persistence;
 using Morsa.Infrastructure.Time;
 using Morsa.Infrastructure.Workspace;
+using Morsa.Infrastructure.Recon;
+using Morsa.Infrastructure.Reporting;
+using Morsa.Infrastructure.Web;
+using Morsa.Infrastructure.Pipelines;
 
 namespace Morsa.Infrastructure;
 
@@ -47,6 +54,20 @@ public static class DependencyInjection
         services.AddScoped<IProxyOutcomeRecorder, ProxyOutcomeRecorder>();
         services.AddSingleton<ISecretResolver, EnvironmentSecretResolver>();
         services.AddSingleton<INetworkTransportFactory, NetworkTransportFactory>();
+        services.AddScoped<RotatingHttpClient>();
+        services.AddScoped<AcquisitionService>();
+        services.AddScoped<DiscoveryService>();
+        services.AddScoped<ISearchProvider, DuckDuckGoSearchProvider>();
+        services.AddScoped<ISearchProvider, SearXngSearchProvider>();
+        services.AddScoped<ISearchProvider, CommonCrawlSearchProvider>();
+        services.AddScoped<ISearchProvider, DirectCrawlerSearchProvider>();
+        services.AddScoped<DnsReconService>();
+        services.AddScoped<FingerprintService>();
+        services.AddScoped<MalwareAnalysisService>();
+        services.AddScoped<WebMappingService>();
+        services.AddScoped<GraphExporter>();
+        services.AddScoped<FullPipelineService>();
+        services.AddSingleton<SearXngBootstrapService>();
 
         return services;
     }

@@ -1,7 +1,9 @@
 using Morsa.Domain.Artifacts;
 using Morsa.Domain.Correlation;
+using Morsa.Domain.Discovery;
 using Morsa.Domain.Networking;
 using Morsa.Domain.Projects;
+using Morsa.Domain.Recon;
 using Morsa.Domain.Runs;
 
 namespace Morsa.Application.Abstractions;
@@ -28,6 +30,18 @@ public interface IMorsaStore
     IQueryable<EntityNode> Entities { get; }
 
     IQueryable<EntityRelation> Relations { get; }
+
+    IQueryable<DiscoveredResource> DiscoveredResources { get; }
+
+    IQueryable<ProviderRequest> ProviderRequests { get; }
+
+    IQueryable<DnsObservation> DnsObservations { get; }
+
+    IQueryable<ServiceObservation> ServiceObservations { get; }
+
+    IQueryable<MalwareObservation> MalwareObservations { get; }
+
+    IQueryable<PluginExecution> PluginExecutions { get; }
 
     IQueryable<ProxyPool> ProxyPools { get; }
 
@@ -78,4 +92,3 @@ public interface IClock
 {
     DateTimeOffset UtcNow { get; }
 }
-
