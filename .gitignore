@@ -1,7 +1,8 @@
 # .NET build outputs
 bin/
 obj/
-artifacts/
+/artifacts/
+fuzz/artifacts/
 TestResults/
 coverage/
 
@@ -23,7 +24,6 @@ coverage/
 morsa.db
 morsa.db-*
 morsa.toml
-artifacts/
 cache/
 logs/
 reports/
