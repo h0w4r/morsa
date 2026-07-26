@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Web;
 using HtmlAgilityPack;
 using Morsa.Application.Abstractions;
+using Morsa.Infrastructure.Configuration;
 using Morsa.Infrastructure.Networking;
 
 namespace Morsa.Infrastructure.Discovery;
@@ -209,7 +210,8 @@ public sealed class CommonCrawlSearchProvider(RotatingHttpClient http) : ISearch
 /// <summary>Active direct crawler for home pages and sitemaps, bounded to one level.</summary>
 public sealed class DirectCrawlerSearchProvider(
     RotatingHttpClient http,
-    NetworkScopeValidator scopeValidator) : ISearchProvider
+    NetworkScopeValidator scopeValidator,
+    MorsaConfiguration configuration) : ISearchProvider
 {
     public string Id => "direct-crawler";
 
@@ -221,7 +223,8 @@ public sealed class DirectCrawlerSearchProvider(
         SearchExecutionContext context,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        var roots = new[] { new Uri($"https://{query.Target}/"), new Uri($"https://{query.Target}/sitemap.xml") };
+        var siteRoot = ResolveSiteRoot(query.Target);
+        var roots = new[] { siteRoot, new Uri(siteRoot, "sitemap.xml") };
         var emitted = 0;
         foreach (var root in roots)
         {
@@ -234,7 +237,7 @@ public sealed class DirectCrawlerSearchProvider(
                 projectId,
                 root,
                 Morsa.Domain.Common.ActivityMode.Active,
-                allowPrivateNetworks: false,
+                allowPrivateNetworks: configuration.Security.AllowPrivateNetworks,
                 cancellationToken).ConfigureAwait(false) ??
                 throw new UnauthorizedAccessException("Direct crawler target is outside authorized active scope or resolves to a blocked address class.");
             HttpFetchResult result;
@@ -271,6 +274,20 @@ public sealed class DirectCrawlerSearchProvider(
                 }
             }
         }
+    }
+
+    private static Uri ResolveSiteRoot(string target)
+    {
+        if (Uri.TryCreate(target, UriKind.Absolute, out var explicitUri))
+        {
+            if (explicitUri.Scheme is not ("http" or "https") || !string.IsNullOrEmpty(explicitUri.UserInfo))
+                throw new InvalidDataException("Direct crawler target must use HTTP or HTTPS without user information.");
+            var builder = new UriBuilder(explicitUri) { Query = string.Empty, Fragment = string.Empty };
+            if (!builder.Path.EndsWith('/')) builder.Path += '/';
+            return builder.Uri;
+        }
+
+        return new Uri($"https://{target.Trim().TrimEnd('/')}/", UriKind.Absolute);
     }
 }
 
