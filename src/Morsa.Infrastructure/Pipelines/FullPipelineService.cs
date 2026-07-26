@@ -120,6 +120,8 @@ public sealed class FullPipelineService(
         var run = await runs.StartAsync(projectId, "run resume", ActivityMode.Passive, cancellationToken).ConfigureAwait(false);
         try
         {
+            // A previous bounded attempt leaves retryable resources as failed; resume must explicitly requeue them.
+            await acquisition.RequeueFailedAsync(projectId, cancellationToken).ConfigureAwait(false);
             var fetchTask = await runs.GetOrCreateTaskAsync(run, "acquisition", $"resume-fetch:{projectId:N}", null, cancellationToken).ConfigureAwait(false);
             await runs.BeginTaskAsync(fetchTask, cancellationToken).ConfigureAwait(false);
             var fetched = await acquisition.FetchPendingAsync(

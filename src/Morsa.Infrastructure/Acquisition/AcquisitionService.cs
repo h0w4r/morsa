@@ -139,6 +139,26 @@ public sealed class AcquisitionService(
         return (downloaded, failed);
     }
 
+    /// <summary>Moves retryable download failures back to pending without reopening scope-rejected resources.</summary>
+    public async Task<int> RequeueFailedAsync(Guid projectId, CancellationToken cancellationToken)
+    {
+        var failed = await store.DiscoveredResources
+            .Where(item => item.ProjectId == projectId && item.Status == "failed")
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+        foreach (var resource in failed)
+        {
+            resource.Status = "pending";
+            resource.LastError = null;
+        }
+
+        if (failed.Count > 0)
+        {
+            await store.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        return failed.Count;
+    }
+
     private static bool TryGetLocation(HttpFetchResult result, Uri current, out Uri next)
     {
         next = current;
