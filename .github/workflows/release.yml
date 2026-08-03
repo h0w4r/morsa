@@ -187,7 +187,7 @@ jobs:
           config: packaging/sbom/syft.yaml
 
       - name: Attest SPDX inventory for every binary package
-        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4
         with:
           subject-path: |
             artifacts/dist/morsa-*.tar.gz
@@ -207,7 +207,7 @@ jobs:
         run: bash scripts/generate-checksums.sh artifacts/dist "SHA256SUMS-${{ matrix.rid }}"
 
       - name: Attest all distributable files with Sigstore OIDC
-        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4
         with:
           subject-checksums: artifacts/dist/SHA256SUMS-${{ matrix.rid }}
 
@@ -247,7 +247,7 @@ jobs:
         run: bash scripts/verify-release.sh --directory artifacts/release --version "${RELEASE_TAG#v}"
 
       - name: Attest complete checksum manifest
-        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4
         with:
           subject-checksums: artifacts/release/SHA256SUMS
 
@@ -321,7 +321,7 @@ jobs:
           sbom: true
 
       - name: Attest OCI provenance with Sigstore OIDC
-        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4
         with:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           subject-digest: ${{ steps.push.outputs.digest }}
